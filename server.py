@@ -520,19 +520,8 @@ def _fetch_yfinance_news(yf_code: str) -> list:
         return []
 
 
-def _translate_titles_zh(titles: list[str]) -> list[str]:
-    """用 Gemini 一次批量翻譯標題；無 API key 則原樣回傳。"""
-    if not titles:
-        return titles
-    key = _get_gemini_key()
-    if not key:
-        return titles
-
-    cache_k = f"trans:{hash(tuple(titles))}"
-    cached = cache_get(cache_k)
-    if cached:
-        return cached
-
+def _gemini_translate_batch(titles: list[str], key: str) -> list[str] | None:
+    """Gemini 批次翻譯（一次 API call 翻全部）。失敗回 None。"""
     try:
         import google.generativeai as genai
         genai.configure(api_key=key)
@@ -550,18 +539,73 @@ def _translate_titles_zh(titles: list[str]) -> list[str]:
         text = (resp.text or "").strip()
         lines = [_re.sub(r"^\s*\d+[\.\)]\s*", "", l).strip()
                  for l in text.split("\n") if l.strip()]
+        # 行數要對齊；不齊就退到 None 走 fallback
         if len(lines) == len(titles):
-            cache_set(cache_k, lines)
             return lines
-        # 行數對不齊就只用前 N 行 + 不足補原文
-        out = []
-        for i, t in enumerate(titles):
-            out.append(lines[i] if i < len(lines) else t)
+        if len(lines) >= len(titles):
+            return lines[:len(titles)]
+        return None
+    except Exception as e:
+        print(f"[translate-gemini] {e}")
+        return None
+
+
+def _gtx_translate_one(text: str) -> str | None:
+    """Google Translate 免費（unofficial）端點，單筆翻譯，無需 API key。"""
+    try:
+        r = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "en", "tl": "zh-TW", "dt": "t", "q": text},
+            timeout=8,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        r.raise_for_status()
+        data = r.json()
+        # data[0] 為分段陣列，每段 [譯文, 原文, ...]
+        chunks = data[0] or []
+        out = "".join((c[0] or "") for c in chunks if c)
+        return out.strip() or None
+    except Exception as e:
+        print(f"[translate-gtx] {e}")
+        return None
+
+
+def _translate_titles_zh(titles: list[str]) -> list[str]:
+    """翻譯英文新聞標題為繁體中文。
+    優先用 Gemini（品質好+一次批次）；沒設 key 或失敗時退回 Google Translate
+    免費端點（無 key、逐條翻譯）；最終 fallback 才回傳原英文。
+    """
+    if not titles:
+        return titles
+
+    cache_k = f"trans:{hash(tuple(titles))}"
+    cached = cache_get(cache_k)
+    if cached:
+        return cached
+
+    # 1) Gemini 批次（如果有 key）
+    key = _get_gemini_key()
+    if key:
+        result = _gemini_translate_batch(titles, key)
+        if result:
+            cache_set(cache_k, result)
+            return result
+
+    # 2) Google Translate 免費端點（逐條）
+    out = []
+    success = 0
+    for t in titles:
+        zh = _gtx_translate_one(t)
+        if zh:
+            out.append(zh); success += 1
+        else:
+            out.append(t)  # 翻譯失敗保留原文
+    if success > 0:
         cache_set(cache_k, out)
         return out
-    except Exception as e:
-        print(f"[translate] {e}")
-        return titles
+
+    # 3) 全部失敗 → 原文
+    return titles
 
 
 def fetch_news(code: str) -> list:
