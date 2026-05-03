@@ -865,9 +865,10 @@ def api_get_watchlist():
 
 @app.post("/api/watchlist")
 def api_add_watchlist(req: AddStockReq):
-    code = req.code.strip()
-    if not code.isdigit():
-        raise HTTPException(400, "代號需為數字")
+    # 美股代號為字母 (AAPL / NVDA)、ETF 含數字或加 . (BRK.B)、指數含 ^ (^GSPC)
+    code = req.code.strip().upper()
+    if not code or len(code) > 10 or not all(c.isalnum() or c in ".-" for c in code):
+        raise HTTPException(400, "代號格式不正確（僅允許英數字、. 或 -，最多 10 字元）")
     wl = load_watchlist()
     if code in wl:
         return {"ok": True, "msg": "已在觀察清單", "data": wl[code]}
@@ -1046,10 +1047,12 @@ def api_get_portfolio():
 
 @app.post("/api/portfolio")
 def api_add_portfolio(req: HoldingReq):
-    if not req.code.strip().isdigit():
-        raise HTTPException(400, "代號需為數字")
+    code = req.code.strip().upper()
+    if not code or not all(c.isalnum() or c in ".-" for c in code):
+        raise HTTPException(400, "代號格式不正確")
+    req.code = code
     if req.shares <= 0 or req.cost_price <= 0:
-        raise HTTPException(400, "張數與成本價需 > 0")
+        raise HTTPException(400, "股數與成本價需 > 0")
     p = load_portfolio()
     # 若不在 watchlist，順手加入（便於追蹤）
     wl = load_watchlist()
