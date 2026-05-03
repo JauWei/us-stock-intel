@@ -1,0 +1,32 @@
+# ===== 個人 / 敏感資料（每人各自產生，不入版控） =====
+# Bot token、API key、持股、警示等都放這幾個檔
+watchlist.json
+portfolio.json
+alerts.json
+telegram.json
+gemini.json
+
+# ===== Python 一般 =====
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.Python
+
+# ===== venv =====
+.venv/
+venv/
+env/
+ENV/
+
+# ===== IDE / 編輯器 =====
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ===== logs =====
+*.log
+logs/

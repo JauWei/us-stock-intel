@@ -1,0 +1,1419 @@
+"""
+美股情報站 backend - FastAPI + yfinance + Gemini + Telegram
+啟動: python server.py  →  http://localhost:18506/
+
+功能:
+- 即時價格 / OHLC / 技術指標 (yfinance)
+- 分析師評等 (yfinance.recommendations) 取代台股的三大法人
+- 持久化觀察清單 (watchlist.json)
+- 訊號偵測 (黃金/死亡交叉、KD 超買賣、突破 20 日新高低)
+- 多週期 K 線 (日/週/月)
+- 英文新聞 + Gemini 自動翻成繁體中文
+- Telegram 警示 (每 5 分鐘背景掃描)
+- 熱度榜 / 族群分組
+- 季營收 + 季 EPS (yfinance quarterly_income_stmt)
+"""
+from __future__ import annotations
+
+import json
+import os
+import threading
+import time
+import traceback
+from pathlib import Path
+from typing import Any, Optional
+
+import numpy as np
+import pandas as pd
+import requests
+import yfinance as yf
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
+
+ROOT = Path(__file__).resolve().parent
+WATCHLIST_FILE = ROOT / "watchlist.json"
+ALERTS_FILE    = ROOT / "alerts.json"
+TELEGRAM_FILE  = ROOT / "telegram.json"
+PORTFOLIO_FILE = ROOT / "portfolio.json"
+GEMINI_FILE    = ROOT / "gemini.json"
+
+# ----------------------------------------------------------------------------
+# Default watchlist (首次啟動時寫入 watchlist.json)
+# ----------------------------------------------------------------------------
+DEFAULT_WATCHLIST: dict[str, dict[str, str]] = {
+    # 七巨頭 Magnificent 7
+    "AAPL":  {"name": "Apple",       "tag": "Tech · 消費電子",        "yf": "AAPL",  "group": "七巨頭"},
+    "MSFT":  {"name": "Microsoft",   "tag": "Tech · 雲端 / Office",   "yf": "MSFT",  "group": "七巨頭"},
+    "GOOGL": {"name": "Alphabet",    "tag": "Tech · 搜尋 / 廣告",     "yf": "GOOGL", "group": "七巨頭"},
+    "AMZN":  {"name": "Amazon",      "tag": "Tech · 電商 / AWS",      "yf": "AMZN",  "group": "七巨頭"},
+    "META":  {"name": "Meta",        "tag": "Tech · 社群 / VR",       "yf": "META",  "group": "七巨頭"},
+    "NVDA":  {"name": "NVIDIA",      "tag": "半導體 · GPU / AI",      "yf": "NVDA",  "group": "七巨頭"},
+    "TSLA":  {"name": "Tesla",       "tag": "EV / 自駕",              "yf": "TSLA",  "group": "七巨頭"},
+    # 半導體 Semiconductor
+    "AMD":   {"name": "AMD",         "tag": "半導體 · CPU / GPU",     "yf": "AMD",   "group": "半導體"},
+    "AVGO":  {"name": "Broadcom",    "tag": "半導體 · 網通 / ASIC",   "yf": "AVGO",  "group": "半導體"},
+    "TSM":   {"name": "TSMC ADR",    "tag": "半導體 · 晶圓代工",      "yf": "TSM",   "group": "半導體"},
+    "QCOM":  {"name": "Qualcomm",    "tag": "半導體 · 手機 SoC",      "yf": "QCOM",  "group": "半導體"},
+    "ARM":   {"name": "Arm Holdings","tag": "半導體 · IP",            "yf": "ARM",   "group": "半導體"},
+    # AI 概念
+    "PLTR":  {"name": "Palantir",    "tag": "AI · 軟體 / 數據",       "yf": "PLTR",  "group": "AI 概念"},
+    "SMCI":  {"name": "Super Micro", "tag": "AI · 伺服器",            "yf": "SMCI",  "group": "AI 概念"},
+    # 流媒體 / 金融
+    "NFLX":  {"name": "Netflix",     "tag": "流媒體",                  "yf": "NFLX",  "group": "其他"},
+    "JPM":   {"name": "JPMorgan",    "tag": "金融 · 銀行",            "yf": "JPM",   "group": "其他"},
+}
+
+CACHE_TTL = 300
+_cache: dict[str, tuple[float, Any]] = {}
+_lock = threading.Lock()
+
+
+def cache_get(key: str):
+    hit = _cache.get(key)
+    if hit and time.time() - hit[0] < CACHE_TTL:
+        return hit[1]
+    return None
+
+
+def cache_set(key: str, val: Any) -> None:
+    _cache[key] = (time.time(), val)
+
+
+# ----------------------------------------------------------------------------
+# 持久化
+# ----------------------------------------------------------------------------
+def load_json(p: Path, default: Any) -> Any:
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            return default
+    return default
+
+
+def save_json(p: Path, data: Any) -> None:
+    with _lock:
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_watchlist() -> dict:
+    wl = load_json(WATCHLIST_FILE, None)
+    if wl is None:
+        save_json(WATCHLIST_FILE, DEFAULT_WATCHLIST)
+        return DEFAULT_WATCHLIST.copy()
+    return wl
+
+
+def load_alerts() -> dict:
+    return load_json(ALERTS_FILE, {})
+
+
+def load_telegram() -> dict:
+    return load_json(TELEGRAM_FILE, {"bot_token": "", "chat_id": ""})
+
+
+# ----------------------------------------------------------------------------
+# 技術指標
+# ----------------------------------------------------------------------------
+def sma(s: pd.Series, n: int) -> pd.Series:
+    return s.rolling(n).mean()
+
+
+def rsi_indicator(s: pd.Series, n: int = 14) -> pd.Series:
+    delta = s.diff()
+    gain = delta.clip(lower=0).rolling(n).mean()
+    loss = (-delta.clip(upper=0)).rolling(n).mean()
+    rs = gain / loss.replace(0, np.nan)
+    return 100 - 100 / (1 + rs)
+
+
+def macd_indicator(s: pd.Series):
+    ema12 = s.ewm(span=12, adjust=False).mean()
+    ema26 = s.ewm(span=26, adjust=False).mean()
+    dif = ema12 - ema26
+    dea = dif.ewm(span=9, adjust=False).mean()
+    return dif, dea, (dif - dea) * 2
+
+
+def kd_indicator(df: pd.DataFrame, n: int = 9):
+    low_n = df["Low"].rolling(n).min()
+    high_n = df["High"].rolling(n).max()
+    rsv = (df["Close"] - low_n) / (high_n - low_n).replace(0, np.nan) * 100
+    rsv = rsv.fillna(50)
+    k = rsv.ewm(com=2, adjust=False).mean()
+    d = k.ewm(com=2, adjust=False).mean()
+    return k, d
+
+
+def safe(v):
+    if v is None:
+        return None
+    if isinstance(v, (float, np.floating)):
+        if np.isnan(v) or np.isinf(v):
+            return None
+        return float(v)
+    if isinstance(v, (int, np.integer)):
+        return int(v)
+    return v
+
+
+# ----------------------------------------------------------------------------
+# 訊號偵測
+# ----------------------------------------------------------------------------
+def detect_signals(closes: pd.Series, ma5_s: pd.Series, ma20_s: pd.Series,
+                   k_s: pd.Series, d_s: pd.Series, rsi_s: pd.Series,
+                   highs: pd.Series, lows: pd.Series, period: str = "D") -> list[dict]:
+    sigs: list[dict] = []
+    # 各週期的 breakout 視窗與標籤
+    breakout_cfg = {
+        "D": (20, "20 日"),
+        "W": (20, "20 週"),
+        "M": (12, "12 月"),
+    }
+    bk_n, bk_label = breakout_cfg.get(period, breakout_cfg["D"])
+
+    if len(closes) < max(21, bk_n + 1):
+        return sigs
+
+    # 均線黃金 / 死亡交叉 (MA5 vs MA20)
+    if not pd.isna(ma5_s.iloc[-1]) and not pd.isna(ma20_s.iloc[-2]):
+        if ma5_s.iloc[-2] <= ma20_s.iloc[-2] and ma5_s.iloc[-1] > ma20_s.iloc[-1]:
+            sigs.append({"key": "golden_cross", "label": "🌟黃金交叉", "color": "red"})
+        elif ma5_s.iloc[-2] >= ma20_s.iloc[-2] and ma5_s.iloc[-1] < ma20_s.iloc[-1]:
+            sigs.append({"key": "death_cross", "label": "💀死亡交叉", "color": "green"})
+
+    # KD 黃金 / 死亡交叉
+    if len(k_s) >= 2:
+        last_k, prev_k = float(k_s.iloc[-1]), float(k_s.iloc[-2])
+        last_d, prev_d = float(d_s.iloc[-1]), float(d_s.iloc[-2])
+        if prev_k <= prev_d and last_k > last_d and last_k < 50:
+            sigs.append({"key": "kd_cross_up", "label": "🔼KD 黃金交叉", "color": "red"})
+        elif prev_k >= prev_d and last_k < last_d and last_k > 50:
+            sigs.append({"key": "kd_cross_dn", "label": "🔽KD 死亡交叉", "color": "green"})
+        if last_k > 80:
+            sigs.append({"key": "kd_overbought", "label": "⚠️KD 超買", "color": "orange"})
+        elif last_k < 20:
+            sigs.append({"key": "kd_oversold", "label": "🚀KD 超賣", "color": "cyan"})
+
+    # RSI 超買 / 超賣
+    if not pd.isna(rsi_s.iloc[-1]):
+        rsi_v = float(rsi_s.iloc[-1])
+        if rsi_v > 75:
+            sigs.append({"key": "rsi_overbought", "label": "🔥RSI 超買", "color": "orange"})
+        elif rsi_v < 25:
+            sigs.append({"key": "rsi_oversold", "label": "❄️RSI 超賣", "color": "cyan"})
+
+    # 突破新高 / 跌破新低
+    price = float(closes.iloc[-1])
+    high_n = float(highs.iloc[-(bk_n+1):-1].max())
+    low_n  = float(lows.iloc[-(bk_n+1):-1].min())
+    if price > high_n * 1.001:
+        sigs.append({"key": "breakout_high", "label": f"🚀 突破 {bk_label}新高", "color": "red"})
+    if price < low_n * 0.999:
+        sigs.append({"key": "breakdown_low", "label": f"📉 跌破 {bk_label}新低", "color": "green"})
+
+    return sigs
+
+
+# ----------------------------------------------------------------------------
+# 分析師評等 (yfinance.recommendations) — 取代台股版的三大法人
+# ----------------------------------------------------------------------------
+def fetch_institutional(yf_code: str, days: int = 10) -> dict | None:
+    """回傳近 N 個月分析師評等變化。
+    沿用台股版 institutional 資料形狀讓前端不必改：
+        fi (外資)   → strongBuy
+        it (投信)   → buy
+        dealer (自營商) → hold
+    使用者一看顏色即可分辨。負面評等(sell/strongSell) 加總後以 negative 一個欄位回傳。
+    """
+    cached = cache_get(f"inst:{yf_code}")
+    if cached:
+        return cached
+    try:
+        rec = yf.Ticker(yf_code).recommendations
+    except Exception as e:
+        print(f"[rec] {yf_code}: {e}")
+        return None
+    if rec is None or len(rec) == 0:
+        return None
+
+    df = rec.copy()
+    if "period" in df.columns:
+        df = df.set_index("period")
+    df = df.sort_index().tail(days)
+    if df.empty:
+        return None
+
+    # 期間 label: 0m / -1m / -2m...
+    labels = []
+    for idx in df.index:
+        s = str(idx)
+        labels.append(s if s.startswith("-") or s == "0m" else s)
+
+    sb = df.get("strongBuy", pd.Series([0] * len(df))).fillna(0).astype(int).tolist()
+    b  = df.get("buy",        pd.Series([0] * len(df))).fillna(0).astype(int).tolist()
+    h  = df.get("hold",       pd.Series([0] * len(df))).fillna(0).astype(int).tolist()
+    sl = df.get("sell",       pd.Series([0] * len(df))).fillna(0).astype(int).tolist()
+    ssl= df.get("strongSell", pd.Series([0] * len(df))).fillna(0).astype(int).tolist()
+    negative = [-(s + ss) for s, ss in zip(sl, ssl)]  # 正負標示
+
+    out = {
+        "dates":  labels,
+        "fi":     sb,        # strongBuy → 對齊「外資」位置
+        "it":     b,         # buy
+        "dealer": h,         # hold
+        "neg":    negative,  # sell + strongSell 合併（顯示為負值）
+        "_legend": {"fi": "Strong Buy", "it": "Buy", "dealer": "Hold", "neg": "Sell"},
+    }
+    cache_set(f"inst:{yf_code}", out)
+    return out
+
+
+# ----------------------------------------------------------------------------
+# 多週期 K 線資料抓取
+# ----------------------------------------------------------------------------
+PERIOD_CFG = {
+    "D": {"period": "1y",  "interval": "1d",  "n": 80,  "label": "日"},
+    "W": {"period": "3y",  "interval": "1wk", "n": 80,  "label": "週"},
+    "M": {"period": "10y", "interval": "1mo", "n": 80,  "label": "月"},
+}
+
+
+def fetch_stock(code: str, period: str = "D", force: bool = False) -> dict:
+    period = period.upper() if period.upper() in PERIOD_CFG else "D"
+    cache_key = f"stock:{code}:{period}"
+    if not force:
+        cached = cache_get(cache_key)
+        if cached:
+            return cached
+
+    wl = load_watchlist()
+    info = wl.get(code)
+    if not info:
+        raise HTTPException(404, f"未追蹤股票 {code}")
+
+    cfg = PERIOD_CFG[period]
+    ticker = yf.Ticker(info["yf"])
+    hist = ticker.history(period=cfg["period"], interval=cfg["interval"], auto_adjust=False)
+    if hist.empty:
+        raise HTTPException(503, f"yfinance 取不到 {code} ({info['yf']}) 資料")
+    hist = hist.dropna(subset=["Close"])
+
+    closes = hist["Close"]
+    ma5_s, ma20_s, ma60_s = sma(closes, 5), sma(closes, 20), sma(closes, 60)
+    rsi_s = rsi_indicator(closes, 14)
+    dif_s, dea_s, macd_s = macd_indicator(closes)
+    k_s, d_s = kd_indicator(hist, 9)
+
+    last = hist.iloc[-1]
+    prev_close = float(hist.iloc[-2]["Close"]) if len(hist) > 1 else float(last["Close"])
+    N = cfg["n"]
+    recent = hist.iloc[-N:]
+
+    klines = [
+        {
+            "date": idx.strftime("%m/%d") if period == "D" else idx.strftime("%Y/%m" if period == "M" else "%m/%d"),
+            "ohlc": [
+                round(float(r["Open"]),  2),
+                round(float(r["Close"]), 2),
+                round(float(r["Low"]),   2),
+                round(float(r["High"]),  2),
+            ],
+            "volume": int(r["Volume"]) if r["Volume"] else 0,    # 美股: shares (整數)
+        }
+        for idx, r in recent.iterrows()
+    ]
+
+    def slice_series(s: pd.Series) -> list:
+        return [safe(v) for v in s.iloc[-N:].tolist()]
+
+    price = float(last["Close"])
+    ma5_v  = safe(ma5_s.iloc[-1])  or price
+    ma20_v = safe(ma20_s.iloc[-1]) or price
+    ma60_v = safe(ma60_s.iloc[-1]) or price
+
+    if ma5_v > ma20_v > ma60_v:
+        ma_status = "多頭排列"
+    elif ma5_v < ma20_v < ma60_v:
+        ma_status = "空頭排列"
+    else:
+        ma_status = "盤整"
+
+    if price > ma20_v and price > ma60_v:
+        trend = "多頭趨勢"
+    elif price < ma20_v and price < ma60_v:
+        trend = "空頭趨勢"
+    else:
+        trend = "盤整"
+
+    # 美股 volume 單位為 shares，不像台股要除以 1000
+    avg_vol_5 = float(hist["Volume"].iloc[-5:].mean())
+    today_vol = float(last["Volume"])
+    vol_change = (today_vol - avg_vol_5) / avg_vol_5 * 100 if avg_vol_5 > 0 else 0.0
+
+    rsi_v = safe(rsi_s.iloc[-1]) or 50.0
+    bias = (price - ma20_v) / ma20_v * 100 if ma20_v else 0
+
+    if rsi_v > 75 and bias > 10:
+        risk = "high"
+        risk_note = f"RSI {rsi_v:.1f} 超買 + 乖離 {bias:.1f}%，主力疑似出貨。"
+        risk_banner = f"高檔過熱警示：RSI {rsi_v:.1f} + 乖離 {bias:.1f}%"
+    elif rsi_v > 70 or bias > 8:
+        risk = "mid"
+        risk_note = f"短線過熱（RSI {rsi_v:.1f}），等待回測。"
+        risk_banner = "中度觀察：技術指標過熱"
+    elif rsi_v < 30:
+        risk = "mid"
+        risk_note = f"RSI {rsi_v:.1f} 超賣，可分批承接。"
+        risk_banner = "短線超賣，留意止穩"
+    else:
+        risk = "low"
+        risk_note = "技術面健康，籌碼穩定。"
+        risk_banner = "趨勢明確 · 操作偏中性"
+
+    span = float(last["High"]) - float(last["Low"])
+    if span <= 0:
+        outer_pct = 0.5
+    else:
+        outer_pct = max(0.3, min(0.7, (float(last["Close"]) - float(last["Low"])) / span))
+    outer_v = int(round(today_vol * outer_pct))
+    inner_v = max(0, int(round(today_vol)) - outer_v)
+
+    high60 = float(recent["High"].max())
+    low60  = float(recent["Low"].min())
+    if price > ma20_v:
+        supports = sorted({int(round(ma20_v)), int(round(ma60_v))})
+        resists = sorted({int(round(min(high60, price * 1.05))), int(round(high60))})
+    else:
+        supports = sorted({int(round(low60)), int(round(ma60_v))})
+        resists = sorted({int(round(ma20_v)), int(round(ma5_v))})
+
+    atr = float((hist["High"] - hist["Low"]).iloc[-14:].mean())
+    swing = atr if atr > 0 else price * 0.015
+    scenario = {
+        "up":   {"entry": f"{price:.0f} ~ {price + swing*0.5:.0f}",
+                 "sl":    int(round(price - swing * 1.0)),
+                 "tp":    f"{int(round(price + swing*2))} / {int(round(price + swing*4))}"},
+        "flat": {"entry": f"{price - swing*0.7:.0f} ~ {price - swing*0.2:.0f}",
+                 "sl":    int(round(price - swing * 1.5)),
+                 "tp":    f"{int(round(price + swing*1))} / {int(round(price + swing*2.5))}"},
+        "down": {"entry": f"{price - swing*2:.0f} ~ {price - swing*1.2:.0f}",
+                 "sl":    int(round(price - swing * 3)),
+                 "tp":    f"{int(round(price - swing*0.3))} / {int(round(price + swing*1))}"},
+    }
+
+    inst = fetch_institutional(info["yf"]) or {"dates": [], "fi": [], "it": [], "dealer": [], "neg": []}
+    fi_today = inst["fi"][-1] if inst["fi"] else 0      # Strong Buy
+    it_today = inst["it"][-1] if inst["it"] else 0      # Buy
+    dealer_today = inst["dealer"][-1] if inst["dealer"] else 0  # Hold
+    neg_today = abs(inst.get("neg", [0])[-1]) if inst.get("neg") else 0  # Sell + StrongSell
+    fi_5  = sum(inst["fi"][-5:])  if inst["fi"] else 0
+    fi_10 = sum(inst["fi"])       if inst["fi"] else 0
+    it_10 = sum(inst["it"])       if inst["it"] else 0
+
+    bullish = fi_today + it_today
+    bearish = neg_today
+    if bullish > bearish * 2 and bullish >= 5:
+        chip_note = f"分析師偏多：Strong Buy {fi_today} + Buy {it_today} 明顯多於 Sell {neg_today}。"
+    elif bearish > bullish:
+        chip_note = f"分析師偏空：Sell {neg_today} 多於買進評等 ({bullish})。"
+    else:
+        chip_note = f"分析師中性：Buy {bullish} / Hold {dealer_today} / Sell {bearish}。"
+
+    # 訊號（日/週/月皆計算，自動換 lookback 視窗）
+    signals = detect_signals(closes, ma5_s, ma20_s, k_s, d_s, rsi_s, hist["High"], hist["Low"], period=period)
+
+    out = {
+        "code":   code,
+        "name":   info["name"],
+        "tag":    info["tag"],
+        "group":  info.get("group", "自選"),
+        "period": period,
+        "price":   round(price, 2),
+        "prev":    round(prev_close, 2),
+        "open":    round(float(last["Open"]),  2),
+        "high":    round(float(last["High"]),  2),
+        "low":     round(float(last["Low"]),   2),
+        "volume":  int(round(today_vol)),
+        "avgVol":  int(round(avg_vol_5)),
+        "inner":   inner_v,
+        "outer":   outer_v,
+        "ma5":  round(ma5_v, 2),
+        "ma20": round(ma20_v, 2),
+        "ma60": round(ma60_v, 2),
+        "rsi":   round(rsi_v, 2),
+        "kd_k":  round(safe(k_s.iloc[-1])  or 0, 2),
+        "kd_d":  round(safe(d_s.iloc[-1])  or 0, 2),
+        "dif":   round(safe(dif_s.iloc[-1]) or 0, 2),
+        "dea":   round(safe(dea_s.iloc[-1]) or 0, 2),
+        "macd":  round(safe(macd_s.iloc[-1]) or 0, 2),
+        "volChange": round(vol_change, 1),
+        "trend":     trend,
+        "maStatus":  ma_status,
+        "risk":       risk,
+        "riskNote":   risk_note,
+        "riskBanner": risk_banner,
+        "resist":  resists,
+        "support": supports,
+        "klines":      klines,
+        "ma5_series":  slice_series(ma5_s),
+        "ma20_series": slice_series(ma20_s),
+        "ma60_series": slice_series(ma60_s),
+        "scenario": scenario,
+        "institutional": inst,
+        "chip": {
+            "fi_today": fi_today, "it_today": it_today, "dealer_today": dealer_today,
+            "fi_5": fi_5, "fi_10": fi_10, "it_10": it_10,
+            "conclusion": chip_note,
+        },
+        "signals": signals,
+        "asOf":    str(hist.index[-1].date()),
+        "source":  "live",
+    }
+    cache_set(cache_key, out)
+
+    # 順便檢查警示
+    if period == "D":
+        try:
+            check_alert(code, price, prev_close, info["name"])
+        except Exception as e:
+            print(f"[alert check] {code}: {e}")
+
+    return out
+
+
+# ----------------------------------------------------------------------------
+# 新聞 (yfinance 英文 + Gemini 自動翻譯成繁體中文)
+# ----------------------------------------------------------------------------
+import re as _re
+
+
+def _fetch_yfinance_news(yf_code: str) -> list:
+    try:
+        raw = yf.Ticker(yf_code).news or []
+        out = []
+        for n in raw[:12]:
+            content = n.get("content") or n
+            title = content.get("title") or n.get("title") or ""
+            publisher = (
+                (content.get("provider") or {}).get("displayName")
+                or n.get("publisher") or ""
+            )
+            link = (
+                (content.get("clickThroughUrl") or {}).get("url")
+                or (content.get("canonicalUrl") or {}).get("url")
+                or n.get("link") or ""
+            )
+            ts = n.get("providerPublishTime") or 0
+            pub_date = content.get("pubDate", "")
+            if not ts and pub_date:
+                try:
+                    ts = int(pd.Timestamp(pub_date).timestamp())
+                except Exception:
+                    ts = 0
+            out.append({"title": title, "publisher": publisher, "link": link, "time": ts})
+        return out
+    except Exception as e:
+        print(f"[yf news] {yf_code}: {e}")
+        return []
+
+
+def _translate_titles_zh(titles: list[str]) -> list[str]:
+    """用 Gemini 一次批量翻譯標題；無 API key 則原樣回傳。"""
+    if not titles:
+        return titles
+    key = _get_gemini_key()
+    if not key:
+        return titles
+
+    cache_k = f"trans:{hash(tuple(titles))}"
+    cached = cache_get(cache_k)
+    if cached:
+        return cached
+
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=key)
+        prompt = (
+            "把以下英文新聞標題翻譯成繁體中文（台灣用語），保持簡潔自然，"
+            "每行一條翻譯對應一條原文，順序對齊，不要加編號或解釋：\n\n"
+            + "\n".join(titles)
+        )
+        try:
+            model = genai.GenerativeModel("gemini-2.0-flash-exp")
+            resp = model.generate_content(prompt)
+        except Exception:
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            resp = model.generate_content(prompt)
+        text = (resp.text or "").strip()
+        lines = [_re.sub(r"^\s*\d+[\.\)]\s*", "", l).strip()
+                 for l in text.split("\n") if l.strip()]
+        if len(lines) == len(titles):
+            cache_set(cache_k, lines)
+            return lines
+        # 行數對不齊就只用前 N 行 + 不足補原文
+        out = []
+        for i, t in enumerate(titles):
+            out.append(lines[i] if i < len(lines) else t)
+        cache_set(cache_k, out)
+        return out
+    except Exception as e:
+        print(f"[translate] {e}")
+        return titles
+
+
+def fetch_news(code: str) -> list:
+    cached = cache_get(f"news:{code}")
+    if cached:
+        return cached
+    wl = load_watchlist()
+    info = wl.get(code)
+    if not info:
+        return []
+
+    raw = _fetch_yfinance_news(info["yf"])
+    if not raw:
+        return []
+
+    # 批次翻譯標題（一次 API call）
+    orig_titles = [n["title"] for n in raw]
+    zh_titles   = _translate_titles_zh(orig_titles)
+
+    out = []
+    for i, n in enumerate(raw):
+        out.append({
+            "title":      zh_titles[i] if i < len(zh_titles) else n["title"],
+            "title_orig": n["title"],
+            "publisher":  n["publisher"],
+            "link":       n["link"],
+            "time":       n["time"],
+        })
+    cache_set(f"news:{code}", out)
+    return out
+
+
+# ----------------------------------------------------------------------------
+# 探測股票代號 (.TW 或 .TWO)
+# ----------------------------------------------------------------------------
+def probe_yfinance(code: str) -> dict | None:
+    """美股代號直接用 ticker 本身，不必加 .TW / .TWO 後綴。"""
+    code = code.strip().upper()
+    try:
+        t = yf.Ticker(code)
+        h = t.history(period="5d", interval="1d", auto_adjust=False)
+        if h.empty:
+            return None
+        try:
+            inf = t.info or {}
+        except Exception:
+            inf = {}
+        name = inf.get("longName") or inf.get("shortName") or code
+        sector = inf.get("sector") or inf.get("industry") or "—"
+        return {
+            "code":   code,
+            "yf":     code,
+            "name":   name,
+            "sector": sector,
+            "price":  float(h.iloc[-1]["Close"]),
+        }
+    except Exception as e:
+        print(f"[probe] {code}: {e}")
+        return None
+
+
+# ----------------------------------------------------------------------------
+# Telegram 警示
+# ----------------------------------------------------------------------------
+def send_telegram(text: str) -> bool:
+    cfg = load_telegram()
+    token = cfg.get("bot_token", "")
+    chat = cfg.get("chat_id", "")
+    if not token or not chat:
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        r = requests.post(url, json={
+            "chat_id":    chat,
+            "text":       text,
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": True,
+        }, timeout=10)
+        return r.status_code == 200
+    except Exception as e:
+        print(f"[telegram] {e}")
+        return False
+
+
+def check_alert(code: str, price: float, prev: float, name: str = "") -> None:
+    alerts = load_alerts()
+    rule = alerts.get(code)
+    if not rule:
+        return
+    above = rule.get("above")
+    below = rule.get("below")
+    last_price = rule.get("last_price", prev)
+    triggered = []
+    if above is not None and float(last_price) < float(above) <= price:
+        triggered.append(f"🚀 *{name} ({code})* 突破上方警示\n價位: *{above}* → 現價 *{price:.2f}*")
+    if below is not None and float(last_price) > float(below) >= price:
+        triggered.append(f"⚠️ *{name} ({code})* 跌破下方警示\n價位: *{below}* → 現價 *{price:.2f}*")
+    rule["last_price"] = price
+    alerts[code] = rule
+    save_json(ALERTS_FILE, alerts)
+    for msg in triggered:
+        send_telegram(msg)
+
+
+def alert_worker():
+    """背景每 5 分鐘掃描有設警示的股票。"""
+    print("[alert_worker] 啟動，每 5 分鐘檢查一次")
+    while True:
+        time.sleep(300)
+        try:
+            wl = load_watchlist()
+            alerts = load_alerts()
+            for code in alerts:
+                if code not in wl:
+                    continue
+                try:
+                    fetch_stock(code, force=True)  # 內部會 check_alert
+                except Exception as e:
+                    print(f"[alert_worker] {code}: {e}")
+        except Exception as e:
+            print(f"[alert_worker] {e}")
+
+
+# ----------------------------------------------------------------------------
+# FastAPI app
+# ----------------------------------------------------------------------------
+app = FastAPI(title="美股情報站 API", version="1.0")
+
+# CORS：允許從 GitHub Pages、file://、其他主機載入的前端訪問本機 server
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def fetch_summary(code: str) -> dict:
+    """輕量版：只抓最近 30 個交易日，不算複雜指標、不打 FinMind。
+
+    主要給清單頁用，冷快取下也能在 < 5 秒內回應 16 檔。
+    若 fetch_stock 已有完整快取則直接重用。
+    """
+    full = cache_get(f"stock:{code}:D")
+    if full:
+        return {
+            "code":   code,
+            "name":   full["name"],
+            "tag":    full["tag"],
+            "group":  full.get("group", "自選"),
+            "price":  full["price"],
+            "prev":   full["prev"],
+            "asOf":   full["asOf"],
+            "signals": full.get("signals", []),
+        }
+
+    cached = cache_get(f"summary:{code}")
+    if cached:
+        return cached
+
+    wl = load_watchlist()
+    info = wl.get(code)
+    if not info:
+        raise HTTPException(404, f"未追蹤股票 {code}")
+
+    try:
+        hist = yf.Ticker(info["yf"]).history(period="2mo", interval="1d", auto_adjust=False)
+    except Exception as e:
+        raise HTTPException(503, f"yfinance 失敗: {e}")
+    if hist.empty:
+        raise HTTPException(503, f"yfinance 取不到 {code}")
+
+    closes = hist["Close"].dropna()
+    last = float(closes.iloc[-1])
+    prev = float(closes.iloc[-2]) if len(closes) > 1 else last
+
+    # 訊號：用本地的 30 根日 K 簡算
+    ma5_s  = sma(closes, 5)
+    ma20_s = sma(closes, 20)
+    rsi_s  = rsi_indicator(closes, 14)
+    k_s, d_s = kd_indicator(hist, 9)
+    sigs = detect_signals(closes, ma5_s, ma20_s, k_s, d_s, rsi_s, hist["High"], hist["Low"], period="D")
+
+    out = {
+        "code":   code,
+        "name":   info["name"],
+        "tag":    info["tag"],
+        "group":  info.get("group", "自選"),
+        "price":  round(last, 2),
+        "prev":   round(prev, 2),
+        "asOf":   str(hist.index[-1].date()),
+        "signals": sigs,
+    }
+    cache_set(f"summary:{code}", out)
+    return out
+
+
+@app.get("/api/stocks")
+def api_list():
+    """觀察清單摘要 (輕量版，並行抓取)。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    wl = load_watchlist()
+    codes = list(wl.keys())
+
+    def safe_summary(code):
+        try:
+            return fetch_summary(code)
+        except Exception as e:
+            meta = wl.get(code, {})
+            return {
+                "code": code, "name": meta.get("name", code), "tag": meta.get("tag", ""),
+                "group": meta.get("group", "自選"), "error": str(e),
+            }
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        results = list(ex.map(safe_summary, codes))
+    return results
+
+
+@app.get("/api/stock/{code}")
+def api_stock(code: str, period: str = "D"):
+    try:
+        return fetch_stock(code, period=period)
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/news/{code}")
+def api_news(code: str):
+    return fetch_news(code)
+
+
+@app.get("/api/groups")
+def api_groups():
+    """族群清單 + 每族群成員代號。"""
+    wl = load_watchlist()
+    groups: dict[str, list[str]] = {}
+    for code, s in wl.items():
+        g = s.get("group", "自選")
+        groups.setdefault(g, []).append(code)
+    return groups
+
+
+@app.get("/api/ranking")
+def api_ranking(by: str = "change"):
+    """熱度榜：依漲跌幅 / 量能 / 外資 / RSI 排序。"""
+    items = []
+    for code in load_watchlist():
+        try:
+            d = fetch_stock(code)
+            change_pct = (d["price"] - d["prev"]) / d["prev"] * 100 if d["prev"] else 0
+            items.append({
+                "code":       code,
+                "name":       d["name"],
+                "tag":        d["tag"],
+                "group":      d.get("group", "自選"),
+                "price":      d["price"],
+                "prev":       d["prev"],
+                "change_pct": round(change_pct, 2),
+                "volume":     d["volume"],
+                "avgVol":     d["avgVol"],
+                "vol_change": d["volChange"],
+                "fi_today":   d["chip"]["fi_today"],
+                "it_today":   d["chip"]["it_today"],
+                "rsi":        d["rsi"],
+                "trend":      d["trend"],
+                "signals":    d.get("signals", []),
+                "risk":       d["risk"],
+            })
+        except Exception:
+            pass
+    keymap = {
+        "change":  lambda x: -x["change_pct"],
+        "down":    lambda x:  x["change_pct"],
+        "volume":  lambda x: -x["volume"],
+        "fi":      lambda x: -x["fi_today"],
+        "fi_sell": lambda x:  x["fi_today"],
+        "rsi":     lambda x: -x["rsi"],
+    }
+    items.sort(key=keymap.get(by, keymap["change"]))
+    return items
+
+
+# ----- 觀察清單管理 -----
+class AddStockReq(BaseModel):
+    code:  str
+    name:  Optional[str] = None
+    tag:   Optional[str] = None
+    group: Optional[str] = "自選"
+
+
+@app.get("/api/watchlist")
+def api_get_watchlist():
+    return load_watchlist()
+
+
+@app.post("/api/watchlist")
+def api_add_watchlist(req: AddStockReq):
+    code = req.code.strip()
+    if not code.isdigit():
+        raise HTTPException(400, "代號需為數字")
+    wl = load_watchlist()
+    if code in wl:
+        return {"ok": True, "msg": "已在觀察清單", "data": wl[code]}
+    probe = probe_yfinance(code)
+    if not probe:
+        raise HTTPException(404, f"yfinance 找不到 {code}（試過 .TW / .TWO）")
+    name = req.name or probe["name"]
+    if len(name) > 12:
+        name = name[:12]
+    wl[code] = {
+        "name":  name,
+        "tag":   req.tag or probe.get("sector", "—"),
+        "yf":    probe["yf"],
+        "group": req.group or "自選",
+    }
+    save_json(WATCHLIST_FILE, wl)
+    # 清掉清單快取，下次列表會重撈
+    _cache.pop(f"stock:{code}:D", None)
+    return {"ok": True, "data": wl[code], "probe": probe}
+
+
+@app.delete("/api/watchlist/{code}")
+def api_del_watchlist(code: str):
+    wl = load_watchlist()
+    if code not in wl:
+        raise HTTPException(404)
+    del wl[code]
+    save_json(WATCHLIST_FILE, wl)
+    return {"ok": True}
+
+
+@app.get("/api/probe/{code}")
+def api_probe(code: str):
+    p = probe_yfinance(code)
+    if not p:
+        raise HTTPException(404, "yfinance 找不到")
+    return p
+
+
+# ----- Telegram -----
+class TelegramReq(BaseModel):
+    bot_token: str
+    chat_id:   str
+
+
+@app.post("/api/telegram")
+def api_telegram_set(req: TelegramReq):
+    save_json(TELEGRAM_FILE, {
+        "bot_token": req.bot_token.strip(),
+        "chat_id":   req.chat_id.strip(),
+    })
+    ok = send_telegram(f"✅ *美股情報站* Telegram 連線測試成功\n時間: `{pd.Timestamp.now():%Y-%m-%d %H:%M:%S}`")
+    return {"ok": True, "test_sent": ok}
+
+
+@app.get("/api/telegram")
+def api_telegram_get():
+    cfg = load_telegram()
+    return {
+        "configured": bool(cfg.get("bot_token") and cfg.get("chat_id")),
+        "chat_id":    cfg.get("chat_id", ""),
+    }
+
+
+# ----- Alerts -----
+class AlertReq(BaseModel):
+    above: Optional[float] = None
+    below: Optional[float] = None
+
+
+@app.get("/api/alerts")
+def api_get_alerts():
+    return load_alerts()
+
+
+@app.post("/api/alerts/{code}")
+def api_set_alert(code: str, req: AlertReq):
+    alerts = load_alerts()
+    rule = alerts.get(code, {})
+    rule["above"] = req.above
+    rule["below"] = req.below
+    if "last_price" not in rule:
+        try:
+            d = fetch_stock(code)
+            rule["last_price"] = d["price"]
+        except Exception:
+            rule["last_price"] = 0
+    alerts[code] = rule
+    save_json(ALERTS_FILE, alerts)
+    return {"ok": True, "data": rule}
+
+
+@app.delete("/api/alerts/{code}")
+def api_del_alert(code: str):
+    alerts = load_alerts()
+    alerts.pop(code, None)
+    save_json(ALERTS_FILE, alerts)
+    return {"ok": True}
+
+
+# ----- Misc -----
+@app.get("/api/refresh")
+def api_refresh():
+    _cache.clear()
+    return {"ok": True, "msg": "快取已清除"}
+
+
+# ============================================================================
+# 1) Portfolio (個人持股)
+# ============================================================================
+def load_portfolio() -> dict:
+    return load_json(PORTFOLIO_FILE, {})
+
+
+class HoldingReq(BaseModel):
+    code:       str
+    shares:     float       # 美股股數（1 股 = 1 股）
+    cost_price: float
+    buy_date:   Optional[str] = None
+    note:       Optional[str] = ""
+
+
+@app.get("/api/portfolio")
+def api_get_portfolio():
+    """回傳所有持股 + 市值/損益（用即時收盤價計算）。"""
+    p = load_portfolio()
+    if not p:
+        return {"holdings": [], "summary": {"total_cost": 0, "total_value": 0,
+                                              "total_pnl": 0, "total_pnl_pct": 0}}
+    holdings = []
+    total_cost = 0.0
+    total_value = 0.0
+    for code, h in p.items():
+        try:
+            s = fetch_summary(code)
+            price = float(s["price"])
+            name = s["name"]
+            tag = s.get("tag", "")
+        except Exception as e:
+            price, name, tag = float(h["cost_price"]), code, ""
+        shares = float(h["shares"])
+        cost   = shares * float(h["cost_price"])
+        value  = shares * price
+        pnl    = value - cost
+        pnl_pct = (price - float(h["cost_price"])) / float(h["cost_price"]) * 100 if h["cost_price"] else 0
+        total_cost += cost
+        total_value += value
+        holdings.append({
+            "code":       code,
+            "name":       name,
+            "tag":        tag,
+            "shares":     shares,
+            "cost_price": float(h["cost_price"]),
+            "buy_date":   h.get("buy_date", ""),
+            "note":       h.get("note", ""),
+            "current":    round(price, 2),
+            "cost":       round(cost, 0),
+            "value":      round(value, 0),
+            "pnl":        round(pnl, 0),
+            "pnl_pct":    round(pnl_pct, 2),
+        })
+    # 計算權重
+    for h in holdings:
+        h["weight"] = round(h["value"] / total_value * 100, 1) if total_value > 0 else 0
+    holdings.sort(key=lambda x: -x["value"])
+
+    summary = {
+        "total_cost":    round(total_cost, 0),
+        "total_value":   round(total_value, 0),
+        "total_pnl":     round(total_value - total_cost, 0),
+        "total_pnl_pct": round((total_value - total_cost) / total_cost * 100, 2) if total_cost > 0 else 0,
+        "count":         len(holdings),
+    }
+    return {"holdings": holdings, "summary": summary}
+
+
+@app.post("/api/portfolio")
+def api_add_portfolio(req: HoldingReq):
+    if not req.code.strip().isdigit():
+        raise HTTPException(400, "代號需為數字")
+    if req.shares <= 0 or req.cost_price <= 0:
+        raise HTTPException(400, "張數與成本價需 > 0")
+    p = load_portfolio()
+    # 若不在 watchlist，順手加入（便於追蹤）
+    wl = load_watchlist()
+    if req.code not in wl:
+        probe = probe_yfinance(req.code)
+        if probe:
+            wl[req.code] = {
+                "name":  probe["name"][:12],
+                "tag":   probe.get("sector", "—"),
+                "yf":    probe["yf"],
+                "group": "持股",
+            }
+            save_json(WATCHLIST_FILE, wl)
+    p[req.code] = {
+        "shares":     float(req.shares),
+        "cost_price": float(req.cost_price),
+        "buy_date":   req.buy_date or "",
+        "note":       req.note or "",
+    }
+    save_json(PORTFOLIO_FILE, p)
+    return {"ok": True, "data": p[req.code]}
+
+
+@app.delete("/api/portfolio/{code}")
+def api_del_portfolio(code: str):
+    p = load_portfolio()
+    if code not in p:
+        raise HTTPException(404)
+    del p[code]
+    save_json(PORTFOLIO_FILE, p)
+    return {"ok": True}
+
+
+# ============================================================================
+# 2) Signal backtest (訊號績效回測)
+# ============================================================================
+@app.get("/api/signal-stats/{code}/{signal_key}")
+def api_signal_stats(code: str, signal_key: str, forward: int = 5):
+    """掃過去 2 年該訊號出現的歷史，計算後 N 天平均報酬與勝率。"""
+    cache_key = f"sigstat:{code}:{signal_key}:{forward}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    wl = load_watchlist()
+    info = wl.get(code)
+    if not info:
+        raise HTTPException(404)
+
+    try:
+        hist = yf.Ticker(info["yf"]).history(period="2y", interval="1d", auto_adjust=False)
+    except Exception as e:
+        raise HTTPException(503, str(e))
+    if len(hist) < 60:
+        raise HTTPException(503, "歷史資料不足")
+    hist = hist.dropna(subset=["Close"])
+
+    closes = hist["Close"]
+    ma5_s, ma20_s = sma(closes, 5), sma(closes, 20)
+    rsi_s = rsi_indicator(closes, 14)
+    k_s, d_s = kd_indicator(hist, 9)
+
+    occurrences = []
+    for i in range(60, len(hist) - forward):
+        snap_close = closes.iloc[: i + 1]
+        snap_ma5   = ma5_s.iloc[: i + 1]
+        snap_ma20  = ma20_s.iloc[: i + 1]
+        snap_rsi   = rsi_s.iloc[: i + 1]
+        snap_k     = k_s.iloc[: i + 1]
+        snap_d     = d_s.iloc[: i + 1]
+        snap_h     = hist["High"].iloc[: i + 1]
+        snap_l     = hist["Low"].iloc[: i + 1]
+        sigs = detect_signals(snap_close, snap_ma5, snap_ma20, snap_k, snap_d,
+                              snap_rsi, snap_h, snap_l, period="D")
+        if any(s["key"] == signal_key for s in sigs):
+            entry = float(closes.iloc[i])
+            future = float(closes.iloc[i + forward])
+            ret = (future - entry) / entry * 100
+            occurrences.append({
+                "date":   hist.index[i].strftime("%Y-%m-%d"),
+                "entry":  round(entry, 2),
+                "future": round(future, 2),
+                "return": round(ret, 2),
+            })
+
+    if not occurrences:
+        result = {"signal": signal_key, "count": 0, "msg": "歷史中無此訊號"}
+    else:
+        rets = [o["return"] for o in occurrences]
+        win = sum(1 for r in rets if r > 0)
+        result = {
+            "signal":      signal_key,
+            "code":        code,
+            "name":        info["name"],
+            "forward_days": forward,
+            "count":       len(occurrences),
+            "win_rate":    round(win / len(rets) * 100, 1),
+            "avg_return":  round(sum(rets) / len(rets), 2),
+            "best":        round(max(rets), 2),
+            "worst":       round(min(rets), 2),
+            "occurrences": occurrences[-15:],
+        }
+    cache_set(cache_key, result)
+    return result
+
+
+# ============================================================================
+# 3) AI commentary (Gemini)
+# ============================================================================
+def _get_gemini_key() -> str:
+    cfg = load_json(GEMINI_FILE, {})
+    return (cfg.get("api_key", "") or os.environ.get("GEMINI_API_KEY", "")).strip()
+
+
+class GeminiReq(BaseModel):
+    api_key: str
+
+
+@app.post("/api/gemini")
+def api_gemini_set(req: GeminiReq):
+    save_json(GEMINI_FILE, {"api_key": req.api_key.strip()})
+    return {"ok": True}
+
+
+@app.get("/api/gemini")
+def api_gemini_get():
+    return {"configured": bool(_get_gemini_key())}
+
+
+@app.get("/api/ai-comment/{code}")
+def api_ai_comment(code: str):
+    """用 Gemini 對單檔產生 3-5 句中文評論。"""
+    key = _get_gemini_key()
+    if not key:
+        return {"ok": False, "msg": "尚未設定 GEMINI API key（從工具列「🤖 AI」按鈕設定）"}
+
+    cache_key = f"ai:{code}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    try:
+        d = fetch_stock(code)
+    except Exception as e:
+        raise HTTPException(503, str(e))
+
+    portfolio = load_portfolio()
+    holding = portfolio.get(code)
+
+    sigs = "、".join(s["label"] for s in d.get("signals", [])) or "無強烈訊號"
+    pos = ""
+    if holding:
+        cost = holding["cost_price"]
+        ret = (d["price"] - cost) / cost * 100
+        pos = (f"\n使用者持股：{holding['shares']} 張，成本 {cost}，"
+               f"目前損益 {ret:+.2f}%")
+
+    prompt = f"""你是美股技術分析助理。用 4-6 句繁體中文評論以下個股，最後給「短線操作建議」一句話。
+請避免免責聲明、不要列點，直接給結論。
+
+【{d['name']} ({d['code']}) {d['tag']}】
+收盤 ${d['price']}（前日 ${d['prev']}, {(d['price']-d['prev'])/d['prev']*100:+.2f}%）
+趨勢：{d['trend']}, 均線：{d['maStatus']}（5/20/60 = {d['ma5']}/{d['ma20']}/{d['ma60']}）
+RSI(14) = {d['rsi']}, KD(9,3) K/D = {d['kd_k']}/{d['kd_d']}, MACD {d['macd']}
+量能變化 {d['volChange']:+.1f}%（5 日均量 {d['avgVol']:,} 股）
+分析師評等：Strong Buy 累計 {d['chip']['fi_10']} 家、Buy {d['chip']['it_10']} 家
+近期訊號：{sigs}
+壓力 ${d['resist']} / 支撐 ${d['support']}{pos}
+"""
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=key)
+        model = genai.GenerativeModel("gemini-2.0-flash-exp")
+        resp = model.generate_content(prompt)
+        text = (resp.text or "").strip()
+    except Exception as e:
+        # 嘗試另一個模型名稱
+        try:
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            resp = model.generate_content(prompt)
+            text = (resp.text or "").strip()
+        except Exception as e2:
+            return {"ok": False, "msg": f"Gemini 失敗: {e2}"}
+
+    out = {"ok": True, "code": code, "comment": text, "asOf": d["asOf"]}
+    cache_set(cache_key, out)
+    return out
+
+
+# ============================================================================
+# 4) Group heatmap (族群熱度地圖)
+# ============================================================================
+@app.get("/api/group-heatmap")
+def api_group_heatmap():
+    from concurrent.futures import ThreadPoolExecutor
+    wl = load_watchlist()
+
+    def safe(code):
+        try:
+            return fetch_summary(code)
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        results = [r for r in ex.map(safe, wl.keys()) if r and "error" not in r]
+
+    groups: dict[str, list] = {}
+    for s in results:
+        groups.setdefault(s.get("group", "自選"), []).append(s)
+
+    out = []
+    for g, members in groups.items():
+        changes = [(m["price"] - m["prev"]) / m["prev"] * 100 for m in members if m.get("prev")]
+        avg = sum(changes) / len(changes) if changes else 0
+        wins = sum(1 for c in changes if c > 0)
+        members_sorted = sorted(members, key=lambda x: -((x["price"] - x["prev"]) / x["prev"] * 100 if x.get("prev") else 0))
+        out.append({
+            "group":      g,
+            "count":      len(members),
+            "avg_change": round(avg, 2),
+            "wins":       wins,
+            "losses":     len(changes) - wins,
+            "max_up":     round(max(changes), 2) if changes else 0,
+            "max_down":   round(min(changes), 2) if changes else 0,
+            "members": [{
+                "code":   m["code"],
+                "name":   m["name"],
+                "price":  m["price"],
+                "change": round((m["price"] - m["prev"]) / m["prev"] * 100, 2) if m.get("prev") else 0,
+            } for m in members_sorted],
+        })
+    out.sort(key=lambda x: -x["avg_change"])
+    return out
+
+
+# ============================================================================
+# 5) Fundamentals (季營收 + 季 EPS via yfinance.quarterly_income_stmt)
+# ============================================================================
+@app.get("/api/fundamentals/{code}")
+def api_fundamentals(code: str):
+    """從 yfinance 抓季營收 + 季 EPS（美股按季公布）。"""
+    cached = cache_get(f"fund:{code}")
+    if cached:
+        return cached
+
+    wl = load_watchlist()
+    info = wl.get(code)
+    if not info:
+        raise HTTPException(404)
+    yf_code = info["yf"]
+
+    revenue: list[dict] = []
+    eps: list[dict] = []
+    try:
+        t = yf.Ticker(yf_code)
+        qis = t.quarterly_income_stmt
+        if qis is not None and not qis.empty:
+            cols = sorted(qis.columns)  # 由舊到新
+            qis = qis[cols]
+            # Total Revenue
+            row_rev = None
+            for key in ("Total Revenue", "Operating Revenue", "Revenue"):
+                if key in qis.index:
+                    row_rev = qis.loc[key]
+                    break
+            if row_rev is not None:
+                # YoY: 對齊 4 季前
+                vals = [float(v) if not pd.isna(v) else 0.0 for v in row_rev.values]
+                for i, dt in enumerate(cols):
+                    if vals[i] <= 0:
+                        continue
+                    yoy = None
+                    if i >= 4 and vals[i - 4] > 0:
+                        yoy = round((vals[i] - vals[i - 4]) / vals[i - 4] * 100, 1)
+                    quarter = (dt.month - 1) // 3 + 1
+                    revenue.append({
+                        "ym":      f"{dt.year}/Q{quarter}",
+                        "revenue": int(vals[i]),     # USD ($)
+                        "yoy":     yoy,
+                    })
+                revenue = revenue[-12:]
+            # Basic / Diluted EPS
+            row_eps = None
+            for key in ("Diluted EPS", "Basic EPS"):
+                if key in qis.index:
+                    row_eps = qis.loc[key]
+                    break
+            if row_eps is not None:
+                for dt, v in zip(cols, row_eps.values):
+                    if pd.isna(v):
+                        continue
+                    eps.append({
+                        "date":  dt.strftime("%Y-%m-%d"),
+                        "value": round(float(v), 2),
+                    })
+                eps = eps[-12:]
+    except Exception as e:
+        print(f"[fund] {code}: {e}")
+
+    out = {"code": code, "revenue": revenue, "eps": eps}
+    cache_set(f"fund:{code}", out)
+    return out
+
+
+# ============================================================================
+# 6) Index overlay (S&P 500 大盤連動)
+# ============================================================================
+@app.get("/api/index")
+def api_index(period: str = "D"):
+    """S&P 500 ^GSPC，回傳跟個股對齊用的 normalized 線。"""
+    period = period.upper() if period.upper() in PERIOD_CFG else "D"
+    cache_key = f"gspc:{period}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    cfg = PERIOD_CFG[period]
+    try:
+        h = yf.Ticker("^GSPC").history(period=cfg["period"], interval=cfg["interval"], auto_adjust=False)
+    except Exception as e:
+        return {"dates": [], "close": [], "error": str(e)}
+    h = h.dropna(subset=["Close"]).iloc[-cfg["n"]:]
+    if h.empty:
+        return {"dates": [], "close": []}
+
+    base = float(h["Close"].iloc[0])
+    out = {
+        "dates":   [idx.strftime("%m/%d") if period == "D" else idx.strftime("%Y/%m" if period == "M" else "%m/%d") for idx in h.index],
+        "close":   [round(float(c), 2) for c in h["Close"].tolist()],
+        "norm":    [round(float(c) / base * 100, 2) for c in h["Close"].tolist()],  # 起點 = 100
+        "current": round(float(h["Close"].iloc[-1]), 2),
+        "prev":    round(float(h["Close"].iloc[-2]), 2) if len(h) > 1 else round(base, 2),
+    }
+    cache_set(cache_key, out)
+    return out
+
+
+@app.get("/")
+def root():
+    return FileResponse(ROOT / "index.html")
+
+
+# ----------------------------------------------------------------------------
+if __name__ == "__main__":
+    import sys, io
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    import uvicorn
+    print("=" * 64)
+    print("[US Stock Intel v1]  http://localhost:18506/")
+    print("    GET  /api/stocks                    清單摘要")
+    print("    GET  /api/stock/{code}?period=D|W|M  詳細")
+    print("    GET  /api/news/{code}                新聞")
+    print("    GET  /api/groups                     族群")
+    print("    GET  /api/ranking?by=change|volume|fi|rsi 熱度榜")
+    print("    POST /api/watchlist                  新增")
+    print("    DEL  /api/watchlist/{code}           移除")
+    print("    POST /api/alerts/{code}              設警示")
+    print("    POST /api/telegram                   設 bot")
+    print("    GET  /api/refresh                    清快取")
+    print("=" * 64)
+    threading.Thread(target=alert_worker, daemon=True).start()
+    uvicorn.run("server:app", host="0.0.0.0", port=18506, reload=False)
