@@ -696,6 +696,7 @@
     <button class="btn" id="btnAdd">➕ 新增股票</button>
     <button class="btn" id="btnAi">🤖 AI</button>
     <button class="btn" id="btnTg">🔔 Telegram</button>
+    <button class="btn" id="btnServer">⚙️ Server</button>
     <div class="seg" id="viewSeg">
       <div class="opt active" data-view="stock">📊 個股</div>
       <div class="opt" data-view="rank">🔥 熱度榜</div>
@@ -1202,6 +1203,31 @@
   </div>
 </div>
 
+<!-- ===== Modal: Server URL (給手機 / 跨機使用) ===== -->
+<div class="modal-mask" id="serverModal">
+  <div class="modal">
+    <h3>⚙️ Server URL 設定</h3>
+    <div id="serverStatus" style="font-size:12px; color:var(--muted); margin-bottom:8px;">— 載入中</div>
+
+    <label>FastAPI server URL</label>
+    <input type="text" id="serverUrl" placeholder="http://192.168.1.50:18506" autocomplete="off">
+    <div class="hint">
+      <strong>📱 手機從 GitHub Pages 或本機 file:// 開時必填</strong><br>
+      1. 與電腦同 WiFi<br>
+      2. 電腦 Windows 命令提示字元輸 <code>ipconfig</code> 找 IPv4（如 192.168.x.x）<br>
+      3. 防火牆要允許 18506 inbound（首次跑 server 會跳出詢問允許私人網路）<br>
+      4. 填入 <code>http://電腦IP:18506</code> 點測試 → 儲存<br>
+      留空 + 儲存 = 清除設定（回到自動偵測）
+    </div>
+
+    <div class="actions">
+      <button class="btn" data-close="serverModal">取消</button>
+      <button class="btn" id="btnServerTest">🔍 測試連線</button>
+      <button class="btn primary" id="btnServerSave">儲存</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Modal: Alert ===== -->
 <div class="modal-mask" id="alertModal">
   <div class="modal">
@@ -1235,7 +1261,31 @@
  *  - 多週期 K 線 / 訊號徽章 / 熱度榜 / 新聞 / Telegram
  * ======================================================================= */
 
-const API_BASE = (location.protocol.startsWith("http") && location.host) ? "" : "http://localhost:18506";
+/* API_BASE 偵測 (順序)：
+ * 1. localStorage 'usi_api_base_v1' 有值 → 用使用者覆寫的 URL
+ * 2. 頁面 host 以 ":18506" 結尾 (localhost / 127.0.0.1 / LAN IP) → 同源相對路徑
+ * 3. 其他 (GitHub Pages、file://) → 預設 http://localhost:18506
+ *
+ * 手機看：與電腦同 WiFi，瀏覽器開 http://電腦LAN_IP:18506/
+ *   - Windows 防火牆要允許 18506 inbound
+ *   - 電腦 IP 可從 ipconfig 找 IPv4 (如 192.168.x.x)
+ *   - 或在「⚙️ Server」按鈕填入 server URL（會存 localStorage）
+ */
+const API_STORAGE_KEY = "usi_api_base_v1";
+function _onSamePort()   { return !!location.host && /:18506$/.test(location.host); }
+function _calcApiBase() {
+  const saved = (localStorage.getItem(API_STORAGE_KEY) || "").trim();
+  if (saved) return saved.replace(/\/+$/, "");
+  if (_onSamePort()) return "";
+  return "http://localhost:18506";
+}
+function setApiBase(url) {
+  const v = (url || "").trim().replace(/\/+$/, "");
+  if (v) localStorage.setItem(API_STORAGE_KEY, v);
+  else   localStorage.removeItem(API_STORAGE_KEY);
+  API_BASE = _calcApiBase();
+}
+let API_BASE = _calcApiBase();
 
 /* ============== 最小 fallback (僅在 server 不可達時用) ============== */
 const FALLBACK_LIST = [
@@ -1244,13 +1294,26 @@ const FALLBACK_LIST = [
 ];
 
 /* ============== Helpers ============== */
+function _formatHttpErr(status, body) {
+  try {
+    const j = JSON.parse(body);
+    if (j.detail) return `HTTP ${status}: ${j.detail}`;
+    if (j.error)  return `HTTP ${status}: ${j.error}`;
+  } catch {}
+  if (body.trim().startsWith("<")) return "本機 server 未連線。請執行 python server.py 後重試。";
+  return `HTTP ${status}: ${body.slice(0, 120)}`;
+}
 async function apiGet(path, timeoutMs = 12000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const r = await fetch(API_BASE + path, { signal: ctrl.signal });
-    if (!r.ok) throw new Error("HTTP " + r.status + " " + (await r.text()).slice(0, 80));
+    if (!r.ok) throw new Error(_formatHttpErr(r.status, await r.text()));
     return await r.json();
+  } catch (e) {
+    if (e.name === "AbortError") throw new Error(`連線逾時 (${timeoutMs/1000}s)`);
+    if (e.name === "TypeError")  throw new Error("無法連線 server（手機請先在「⚙️ Server」設定電腦 LAN IP）");
+    throw e;
   } finally { clearTimeout(t); }
 }
 async function apiSend(path, method, body, timeoutMs = 12000) {
@@ -1263,8 +1326,12 @@ async function apiSend(path, method, body, timeoutMs = 12000) {
       body: body ? JSON.stringify(body) : undefined,
     });
     const txt = await r.text();
-    if (!r.ok) throw new Error("HTTP " + r.status + " " + txt.slice(0, 200));
+    if (!r.ok) throw new Error(_formatHttpErr(r.status, txt));
     return txt ? JSON.parse(txt) : {};
+  } catch (e) {
+    if (e.name === "AbortError") throw new Error(`連線逾時 (${timeoutMs/1000}s)`);
+    if (e.name === "TypeError")  throw new Error("無法連線 server（手機請先在「⚙️ Server」設定電腦 LAN IP）");
+    throw e;
   } finally { clearTimeout(t); }
 }
 
@@ -1890,6 +1957,7 @@ function bindToolbar() {
   document.getElementById("btnAdd").addEventListener("click", () => openModal("addModal"));
   document.getElementById("btnTg").addEventListener("click", () => openTelegramModal());
   document.getElementById("btnAi").addEventListener("click", () => openAiCfgModal());
+  document.getElementById("btnServer").addEventListener("click", () => openServerModal());
   document.getElementById("btnAlert").addEventListener("click", () => openAlertModal());
   document.getElementById("btnRemove").addEventListener("click", () => removeCurrentStock());
   document.getElementById("btnGenAi").addEventListener("click", () => generateAiComment());
@@ -1948,6 +2016,10 @@ function bindModals() {
 
   // Holding
   document.getElementById("btnHoldingSave").addEventListener("click", saveHolding);
+
+  // Server URL config
+  document.getElementById("btnServerSave").addEventListener("click", saveServerUrl);
+  document.getElementById("btnServerTest").addEventListener("click", testServerUrl);
 }
 
 /* ----- Add Stock ----- */
@@ -2302,6 +2374,46 @@ async function saveAiKey() {
     closeModal("aiModal");
     alert("✅ 已儲存。回到個股頁點「✨ 產生評論」測試。");
   } catch (e) { alert("失敗: " + e.message); }
+}
+
+/* =========================================================================
+ * Server URL 設定 (給手機 / 跨機使用)
+ * ======================================================================= */
+function _describeApiBase() {
+  if (!API_BASE) return `(同源相對路徑) · 目前 host = ${location.host || "file://"}`;
+  return API_BASE;
+}
+function openServerModal() {
+  const stat = document.getElementById("serverStatus");
+  const saved = localStorage.getItem(API_STORAGE_KEY) || "";
+  document.getElementById("serverUrl").value = saved;
+  stat.innerHTML = `目前使用：<code style="color:var(--cyan);">${_describeApiBase()}</code>`;
+  openModal("serverModal");
+}
+async function testServerUrl() {
+  const url = document.getElementById("serverUrl").value.trim().replace(/\/+$/, "");
+  const stat = document.getElementById("serverStatus");
+  const target = url || (_onSamePort() ? location.origin : "http://localhost:18506");
+  stat.innerHTML = `🔍 測試 <code>${target}</code> ...`;
+  try {
+    const r = await fetch(target + "/api/refresh", { method: "GET" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+    stat.innerHTML = `✅ <span style="color:var(--green);">連線成功</span> · ${d.msg || "OK"}`;
+  } catch (e) {
+    stat.innerHTML = `❌ <span style="color:var(--red);">無法連線</span>: ${e.message}`;
+  }
+}
+async function saveServerUrl() {
+  const url = document.getElementById("serverUrl").value.trim();
+  setApiBase(url);
+  closeModal("serverModal");
+  // 重新拉資料
+  await refreshList();
+  if (state.activeCode) loadStock(state.activeCode);
+  // 更新 sourceChip
+  const chip = document.getElementById("sourceChip");
+  if (chip) chip.textContent = "Server: " + (API_BASE || location.host);
 }
 
 /* =========================================================================
