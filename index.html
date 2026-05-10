@@ -1045,9 +1045,12 @@
         <div class="opt active" data-by="change">漲幅</div>
         <div class="opt" data-by="down">跌幅</div>
         <div class="opt" data-by="volume">成交量</div>
+        <div class="opt" data-by="win">短線勝率</div>
+        <div class="opt" data-by="signals">訊號多</div>
+        <div class="opt" data-by="bias">乖離大</div>
         <div class="opt" data-by="fi">Strong Buy</div>
-        <div class="opt" data-by="fi_sell">Sell</div>
-        <div class="opt" data-by="rsi">RSI</div>
+        <div class="opt" data-by="rsi">RSI 高</div>
+        <div class="opt" data-by="rsi_low">RSI 低</div>
       </div>
       <span class="spacer"></span>
       <span style="font-size:12px; color:var(--muted);" id="rankCount">—</span>
@@ -1097,9 +1100,9 @@
       <table class="pf-table" id="pfTable">
         <thead>
           <tr>
-            <th>代號</th><th>名稱</th><th>張數</th><th>成本價</th>
+            <th>代號 / 買入日</th><th>名稱</th><th>股數</th><th>成本價</th>
             <th>現價</th><th>市值</th><th>損益</th><th>報酬率</th>
-            <th>權重</th><th>備註</th><th>操作</th>
+            <th>權重</th><th>移動停利</th><th>備註</th><th>操作</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -2220,14 +2223,24 @@ async function loadPortfolio() {
 
     const tbody = document.querySelector("#pfTable tbody");
     if (!data.holdings.length) {
-      tbody.innerHTML = `<tr><td colspan="11" style="padding:30px; color:var(--muted);">尚未新增持股，點右上「➕ 新增持股」開始</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="12" style="padding:30px; color:var(--muted);">尚未新增持股，點右上「➕ 新增持股」開始</td></tr>`;
       return;
     }
     tbody.innerHTML = data.holdings.map(h => {
       const pnlColor = h.pnl >= 0 ? "var(--red)" : "var(--green)";
+      const ruleColor = (h.rule || "").includes("觸發") ? "var(--red)"
+                      : (h.rule || "").includes("目標") ? "var(--orange)"
+                      : (h.rule || "").includes("保本") ? "var(--cyan)"
+                      : "var(--muted)";
+      const trail = h.trail_stop != null ? h.trail_stop : "—";
+      const buyDate = h.buy_date ? `<div style="font-size:10px; color:var(--muted)">${h.buy_date}</div>` : "";
       return `
         <tr>
-          <td><strong style="color:var(--yellow);">${h.code}</strong></td>
+          <td>
+            <a href="#" class="pf-code-link" data-code="${h.code}"
+               style="color:var(--yellow); font-weight:700; text-decoration:none;">${h.code}</a>
+            ${buyDate}
+          </td>
           <td>${h.name}</td>
           <td>${h.shares}</td>
           <td>${h.cost_price}</td>
@@ -2236,35 +2249,54 @@ async function loadPortfolio() {
           <td style="color:${pnlColor}; font-weight:700">${h.pnl>=0?'+':''}${fmt(h.pnl)}</td>
           <td style="color:${pnlColor}; font-weight:700">${h.pnl_pct>=0?'+':''}${h.pnl_pct}%</td>
           <td>${h.weight}%</td>
+          <td style="font-size:11px;">
+            <div style="color:var(--orange); font-weight:700;">⬆ ${trail}</div>
+            <div style="color:${ruleColor}; font-size:10px; max-width:160px; line-height:1.3;">${h.rule || '—'}</div>
+          </td>
           <td style="font-size:11px; color:var(--muted);">${h.note || '—'}</td>
-          <td><button class="del-btn" data-code="${h.code}">刪</button></td>
+          <td><button class="del-btn" data-id="${h.id}" data-code="${h.code}">刪</button></td>
         </tr>`;
     }).join("");
+
+    // 點代號跳到個股
+    tbody.querySelectorAll(".pf-code-link").forEach(a => {
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        state.activeCode = a.dataset.code;
+        switchView("stock");
+        loadStock(state.activeCode);
+      });
+    });
+    // 刪除
     tbody.querySelectorAll(".del-btn").forEach(b => {
       b.addEventListener("click", async () => {
-        if (!confirm(`移除 ${b.dataset.code} 的持股紀錄？`)) return;
-        await apiSend(`/api/portfolio/${b.dataset.code}`, "DELETE");
+        if (!confirm(`移除 ${b.dataset.code} 的這筆持股？`)) return;
+        await apiSend(`/api/portfolio/${b.dataset.id}`, "DELETE");
         loadPortfolio();
       });
     });
   } catch (e) {
     document.querySelector("#pfTable tbody").innerHTML =
-      `<tr><td colspan="11" style="color:var(--red);">載入失敗: ${e.message}</td></tr>`;
+      `<tr><td colspan="12" style="color:var(--red);">載入失敗: ${e.message}</td></tr>`;
   }
 }
 
 async function saveHolding() {
-  const code = document.getElementById("hCode").value.trim();
+  const code = (document.getElementById("hCode").value || "").trim().toUpperCase();
   const shares = parseFloat(document.getElementById("hShares").value);
   const cost_price = parseFloat(document.getElementById("hPrice").value);
   const buy_date = document.getElementById("hDate").value;
   const note = document.getElementById("hNote").value;
-  if (!code || !shares || !cost_price) { alert("代號、張數、成本價必填"); return; }
+  if (!code || !shares || !cost_price) { alert("代號、股數、成本價必填"); return; }
   try {
-    await apiSend("/api/portfolio", "POST", { code, shares, cost_price, buy_date, note });
+    const r = await apiSend("/api/portfolio", "POST", { code, shares, cost_price, buy_date, note });
     closeModal("holdingModal");
     ["hCode","hShares","hPrice","hDate","hNote"].forEach(id => document.getElementById(id).value = "");
-    await refreshList();   // 順便把 watchlist 同步
+    // 若有加新 stock 到 watchlist，要清 server 端 cache (refresh) 然後重抓
+    if (r.added_to_watchlist) {
+      try { await fetch(API_BASE + "/api/refresh"); } catch {}
+    }
+    await refreshList();
     if (state.activeView === "pf") loadPortfolio();
     else switchView("pf");
   } catch (e) { alert("失敗: " + e.message); }

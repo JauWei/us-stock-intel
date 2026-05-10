@@ -520,23 +520,35 @@ def _fetch_yfinance_news(yf_code: str) -> list:
         return []
 
 
+GEMINI_MODELS = ("gemini-2.5-flash", "gemini-2.5-flash-lite")
+
+
+def _gemini_call(key: str, prompt: str) -> str:
+    """新版 google-genai SDK；依序嘗試多個模型，回傳首個成功結果文字。"""
+    from google import genai
+    client = genai.Client(api_key=key)
+    last_err = None
+    for model_name in GEMINI_MODELS:
+        try:
+            resp = client.models.generate_content(model=model_name, contents=prompt)
+            txt = (resp.text or "").strip()
+            if txt:
+                return txt
+        except Exception as e:
+            last_err = e
+            continue
+    raise last_err or RuntimeError("Gemini all models failed")
+
+
 def _gemini_translate_batch(titles: list[str], key: str) -> list[str] | None:
     """Gemini 批次翻譯（一次 API call 翻全部）。失敗回 None。"""
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=key)
         prompt = (
             "把以下英文新聞標題翻譯成繁體中文（台灣用語），保持簡潔自然，"
             "每行一條翻譯對應一條原文，順序對齊，不要加編號或解釋：\n\n"
             + "\n".join(titles)
         )
-        try:
-            model = genai.GenerativeModel("gemini-2.0-flash-exp")
-            resp = model.generate_content(prompt)
-        except Exception:
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            resp = model.generate_content(prompt)
-        text = (resp.text or "").strip()
+        text = _gemini_call(key, prompt)
         lines = [_re.sub(r"^\s*\d+[\.\)]\s*", "", l).strip()
                  for l in text.split("\n") if l.strip()]
         # 行數要對齊；不齊就退到 None 走 fallback
@@ -790,6 +802,17 @@ def fetch_summary(code: str) -> dict:
     k_s, d_s = kd_indicator(hist, 9)
     sigs = detect_signals(closes, ma5_s, ma20_s, k_s, d_s, rsi_s, hist["High"], hist["Low"], period="D")
 
+    # 短線勝率啟發式 (與前端 winRate 計算一致)
+    rsi_v = float(rsi_s.iloc[-1]) if not pd.isna(rsi_s.iloc[-1]) else 50.0
+    ma5v  = float(ma5_s.iloc[-1])  if not pd.isna(ma5_s.iloc[-1])  else last
+    ma20v = float(ma20_s.iloc[-1]) if not pd.isna(ma20_s.iloc[-1]) else last
+    base = 50
+    if ma5v > ma20v: base += 15
+    elif ma5v < ma20v: base -= 15
+    if rsi_v > 70: base -= 10
+    elif rsi_v < 30: base += 10
+    win_rate = max(20, min(85, base))
+
     out = {
         "code":   code,
         "name":   info["name"],
@@ -799,6 +822,9 @@ def fetch_summary(code: str) -> dict:
         "prev":   round(prev, 2),
         "asOf":   str(hist.index[-1].date()),
         "signals": sigs,
+        "rsi":          round(rsi_v, 2),
+        "win_rate":     win_rate,
+        "signal_count": len(sigs),
     }
     cache_set(f"summary:{code}", out)
     return out
@@ -856,12 +882,31 @@ def api_groups():
 
 @app.get("/api/ranking")
 def api_ranking(by: str = "change"):
-    """熱度榜：依漲跌幅 / 量能 / 外資 / RSI 排序。"""
+    """熱度榜排序：
+    - change / down: 漲幅 / 跌幅
+    - volume:        成交量
+    - fi / fi_sell:  Strong Buy 多 / 少
+    - rsi / rsi_low: RSI 高 / 低
+    - win:           短線勝率
+    - signals:       訊號數
+    - bias:          乖離率
+    """
     items = []
     for code in load_watchlist():
         try:
             d = fetch_stock(code)
             change_pct = (d["price"] - d["prev"]) / d["prev"] * 100 if d["prev"] else 0
+            sigs = d.get("signals", [])
+            ma_status = d.get("maStatus", "")
+            rsi_v = d["rsi"]
+            base = 50
+            if "多頭" in ma_status: base += 15
+            elif "空頭" in ma_status: base -= 15
+            if rsi_v > 70: base -= 10
+            elif rsi_v < 30: base += 10
+            win_rate = max(20, min(85, base))
+            ma20 = d.get("ma20", 0) or 1
+            bias = (d["price"] - ma20) / ma20 * 100 if ma20 else 0
             items.append({
                 "code":       code,
                 "name":       d["name"],
@@ -875,20 +920,27 @@ def api_ranking(by: str = "change"):
                 "vol_change": d["volChange"],
                 "fi_today":   d["chip"]["fi_today"],
                 "it_today":   d["chip"]["it_today"],
-                "rsi":        d["rsi"],
+                "rsi":        rsi_v,
                 "trend":      d["trend"],
-                "signals":    d.get("signals", []),
+                "signals":    sigs,
+                "signal_count": len(sigs),
+                "win_rate":   win_rate,
+                "bias":       round(bias, 2),
                 "risk":       d["risk"],
             })
         except Exception:
             pass
     keymap = {
-        "change":  lambda x: -x["change_pct"],
-        "down":    lambda x:  x["change_pct"],
-        "volume":  lambda x: -x["volume"],
-        "fi":      lambda x: -x["fi_today"],
-        "fi_sell": lambda x:  x["fi_today"],
-        "rsi":     lambda x: -x["rsi"],
+        "change":   lambda x: -x["change_pct"],
+        "down":     lambda x:  x["change_pct"],
+        "volume":   lambda x: -x["volume"],
+        "fi":       lambda x: -x["fi_today"],
+        "fi_sell":  lambda x:  x["fi_today"],
+        "rsi":      lambda x: -x["rsi"],
+        "rsi_low":  lambda x:  x["rsi"],
+        "win":      lambda x: -x["win_rate"],
+        "signals":  lambda x: -x["signal_count"],
+        "bias":     lambda x: -abs(x["bias"]),
     }
     items.sort(key=keymap.get(by, keymap["change"]))
     return items
@@ -1021,10 +1073,29 @@ def api_refresh():
 
 
 # ============================================================================
-# 1) Portfolio (個人持股)
+# 1) Portfolio (個人持股；同代號可多筆，各自有 id)
 # ============================================================================
-def load_portfolio() -> dict:
-    return load_json(PORTFOLIO_FILE, {})
+import uuid as _uuid
+
+
+def load_portfolio() -> list:
+    """永遠回 list。舊版 dict 格式 (code → holding) 會自動遷移成新版 list。"""
+    raw = load_json(PORTFOLIO_FILE, [])
+    if isinstance(raw, dict):
+        migrated = []
+        for code, h in raw.items():
+            migrated.append({
+                "id":         _uuid.uuid4().hex[:12],
+                "code":       code,
+                "shares":     float(h.get("shares", 0) or 0),
+                "cost_price": float(h.get("cost_price", 0) or 0),
+                "buy_date":   h.get("buy_date", "") or "",
+                "note":       h.get("note", "") or "",
+            })
+        save_json(PORTFOLIO_FILE, migrated)
+        print(f"[portfolio] 舊 dict 格式遷移成 list，{len(migrated)} 筆")
+        return migrated
+    return raw if isinstance(raw, list) else []
 
 
 class HoldingReq(BaseModel):
@@ -1035,24 +1106,73 @@ class HoldingReq(BaseModel):
     note:       Optional[str] = ""
 
 
+def _trailing_stop_advice(yf_code: str, buy_date: str, cost_price: float, current_price: float) -> dict:
+    """計算移動停利建議。
+
+    規則組合：
+    - 從買入日後的最高點 -10% = 移動停利
+    - 保本停利：若已 +5% 起，停損上移至成本價
+    - 目標停利：+20%
+    """
+    try:
+        kwargs = {"period": "1y", "interval": "1d", "auto_adjust": False}
+        if buy_date:
+            kwargs = {"start": buy_date, "interval": "1d", "auto_adjust": False}
+        hist = yf.Ticker(yf_code).history(**kwargs)
+        if hist.empty:
+            return {"trail_stop": None, "post_high": None, "breakeven": None,
+                    "target": round(cost_price * 1.20, 2), "rule": "資料不足"}
+        post_high = float(hist["High"].max())
+    except Exception as e:
+        print(f"[trail] {yf_code}: {e}")
+        return {"trail_stop": None, "post_high": None, "breakeven": None,
+                "target": round(cost_price * 1.20, 2), "rule": "計算失敗"}
+
+    trail_pct  = 0.10
+    trail_stop = round(post_high * (1 - trail_pct), 2)
+    target     = round(cost_price * 1.20, 2)
+    breakeven  = round(cost_price, 2) if current_price >= cost_price * 1.05 else None
+    ret_pct    = (current_price - cost_price) / cost_price * 100 if cost_price else 0
+
+    if ret_pct >= 20:
+        rule = f"已 +{ret_pct:.0f}% 達目標，建議分批停利"
+    elif current_price <= trail_stop:
+        rule = f"已觸發 -10% 移動停利 ({trail_stop})，建議出場"
+    elif breakeven:
+        rule = f"已保本；停利上移至高點 -10% = {trail_stop}"
+    else:
+        rule = f"持有觀察，停損 {round(cost_price * 0.92, 2)} (-8%)"
+
+    return {
+        "trail_stop": trail_stop,
+        "post_high":  round(post_high, 2),
+        "breakeven":  breakeven,
+        "target":     target,
+        "rule":       rule,
+    }
+
+
 @app.get("/api/portfolio")
 def api_get_portfolio():
-    """回傳所有持股 + 市值/損益（用即時收盤價計算）。"""
+    """回傳所有持股 + 市值/損益/移動停利建議（用即時收盤價計算）。"""
     p = load_portfolio()
     if not p:
         return {"holdings": [], "summary": {"total_cost": 0, "total_value": 0,
-                                              "total_pnl": 0, "total_pnl_pct": 0}}
+                                              "total_pnl": 0, "total_pnl_pct": 0, "count": 0}}
     holdings = []
     total_cost = 0.0
     total_value = 0.0
-    for code, h in p.items():
+    wl = load_watchlist()
+    for h in p:
+        code = h["code"]
         try:
             s = fetch_summary(code)
             price = float(s["price"])
-            name = s["name"]
-            tag = s.get("tag", "")
-        except Exception as e:
+            name  = s["name"]
+            tag   = s.get("tag", "")
+        except Exception:
             price, name, tag = float(h["cost_price"]), code, ""
+        yf_code = wl.get(code, {}).get("yf", code)
         shares = float(h["shares"])
         cost   = shares * float(h["cost_price"])
         value  = shares * price
@@ -1060,7 +1180,11 @@ def api_get_portfolio():
         pnl_pct = (price - float(h["cost_price"])) / float(h["cost_price"]) * 100 if h["cost_price"] else 0
         total_cost += cost
         total_value += value
+
+        trail = _trailing_stop_advice(yf_code, h.get("buy_date", ""), float(h["cost_price"]), price)
+
         holdings.append({
+            "id":         h.get("id") or _uuid.uuid4().hex[:12],
             "code":       code,
             "name":       name,
             "tag":        tag,
@@ -1073,8 +1197,12 @@ def api_get_portfolio():
             "value":      round(value, 0),
             "pnl":        round(pnl, 0),
             "pnl_pct":    round(pnl_pct, 2),
+            "trail_stop": trail.get("trail_stop"),
+            "post_high":  trail.get("post_high"),
+            "breakeven":  trail.get("breakeven"),
+            "target":     trail.get("target"),
+            "rule":       trail.get("rule"),
         })
-    # 計算權重
     for h in holdings:
         h["weight"] = round(h["value"] / total_value * 100, 1) if total_value > 0 else 0
     holdings.sort(key=lambda x: -x["value"])
@@ -1094,40 +1222,54 @@ def api_add_portfolio(req: HoldingReq):
     code = req.code.strip().upper()
     if not code or not all(c.isalnum() or c in ".-" for c in code):
         raise HTTPException(400, "代號格式不正確")
-    req.code = code
     if req.shares <= 0 or req.cost_price <= 0:
         raise HTTPException(400, "股數與成本價需 > 0")
-    p = load_portfolio()
-    # 若不在 watchlist，順手加入（便於追蹤）
+
+    p = load_portfolio()  # list
+
+    # 若不在 watchlist，順手加入（便於追蹤），並清掉相關快取讓 chip 即時更新
     wl = load_watchlist()
-    if req.code not in wl:
-        probe = probe_yfinance(req.code)
+    added_to_watchlist = False
+    if code not in wl:
+        probe = probe_yfinance(code)
         if probe:
-            wl[req.code] = {
+            wl[code] = {
                 "name":  probe["name"][:12],
                 "tag":   probe.get("sector", "—"),
                 "yf":    probe["yf"],
                 "group": "持股",
             }
             save_json(WATCHLIST_FILE, wl)
-    p[req.code] = {
+            added_to_watchlist = True
+            # Clear caches so /api/stocks chip count refresh
+            for k in list(_cache.keys()):
+                if k.startswith("summary:") or k.startswith("stock:"):
+                    _cache.pop(k, None)
+
+    new_holding = {
+        "id":         _uuid.uuid4().hex[:12],
+        "code":       code,
         "shares":     float(req.shares),
         "cost_price": float(req.cost_price),
         "buy_date":   req.buy_date or "",
         "note":       req.note or "",
     }
+    p.append(new_holding)
     save_json(PORTFOLIO_FILE, p)
-    return {"ok": True, "data": p[req.code]}
+    return {"ok": True, "data": new_holding, "added_to_watchlist": added_to_watchlist}
 
 
-@app.delete("/api/portfolio/{code}")
-def api_del_portfolio(code: str):
+@app.delete("/api/portfolio/{holding_id}")
+def api_del_portfolio(holding_id: str):
+    """刪除單筆持股 (用 id)。向下相容：若傳入的是 code 且唯一，也接受。"""
     p = load_portfolio()
-    if code not in p:
-        raise HTTPException(404)
-    del p[code]
-    save_json(PORTFOLIO_FILE, p)
-    return {"ok": True}
+    new_p = [h for h in p if h.get("id") != holding_id]
+    if len(new_p) == len(p):
+        new_p = [h for h in p if h.get("code") != holding_id]
+        if len(new_p) == len(p):
+            raise HTTPException(404)
+    save_json(PORTFOLIO_FILE, new_p)
+    return {"ok": True, "removed": len(p) - len(new_p)}
 
 
 # ============================================================================
@@ -1267,19 +1409,9 @@ RSI(14) = {d['rsi']}, KD(9,3) K/D = {d['kd_k']}/{d['kd_d']}, MACD {d['macd']}
 壓力 ${d['resist']} / 支撐 ${d['support']}{pos}
 """
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=key)
-        model = genai.GenerativeModel("gemini-2.0-flash-exp")
-        resp = model.generate_content(prompt)
-        text = (resp.text or "").strip()
+        text = _gemini_call(key, prompt)
     except Exception as e:
-        # 嘗試另一個模型名稱
-        try:
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            resp = model.generate_content(prompt)
-            text = (resp.text or "").strip()
-        except Exception as e2:
-            return {"ok": False, "msg": f"Gemini 失敗: {e2}"}
+        return {"ok": False, "msg": f"Gemini 失敗: {e}"}
 
     out = {"ok": True, "code": code, "comment": text, "asOf": d["asOf"]}
     cache_set(cache_key, out)
