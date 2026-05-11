@@ -696,7 +696,11 @@ def fetch_insider(code: str, days: int = 180) -> dict:
             action = "sell"
         else:
             action = "other"
-        val = float(r.get("Value", 0) or 0)
+        # yfinance 某些紀錄（如贈與、選擇權行權）的 Value/Shares 可能是 NaN
+        raw_val = r.get("Value")
+        val = float(raw_val) if raw_val is not None and not pd.isna(raw_val) else 0.0
+        raw_sh = r.get("Shares")
+        shares = int(raw_sh) if raw_sh is not None and not pd.isna(raw_sh) else 0
         if action == "buy":  buy_total += val
         elif action == "sell": sell_total += val
         txs.append({
@@ -704,7 +708,7 @@ def fetch_insider(code: str, days: int = 180) -> dict:
             "insider":  str(r.get("Insider", "")),
             "position": str(r.get("Position", "")),
             "action":   action,
-            "shares":   int(r.get("Shares", 0) or 0),
+            "shares":   shares,
             "value":    int(val),
             "text":     txt[:60],
         })
@@ -802,9 +806,15 @@ def fetch_congress(code: str, days: int = 180) -> dict:
     try:
         url = "https://finnhub.io/api/v1/stock/congressional-trading"
         r = requests.get(url, params={"symbol": symbol, "token": key}, timeout=10)
-        if r.status_code == 401 or r.status_code == 403:
+        if r.status_code == 403:
             out = {"transactions": [], "summary": {"buy_count": 0, "sell_count": 0,
-                                                     "n_politicians": 0, "error": "Finnhub key 無效或無權限"}}
+                "n_politicians": 0,
+                "error": "Finnhub congressional-trading 已改為付費 endpoint (Stock Master plan)。免費 tier 無權限。"}}
+            cache_set(cache_key, out)
+            return out
+        if r.status_code == 401:
+            out = {"transactions": [], "summary": {"buy_count": 0, "sell_count": 0,
+                "n_politicians": 0, "error": "Finnhub API key 無效"}}
             cache_set(cache_key, out)
             return out
         r.raise_for_status()
