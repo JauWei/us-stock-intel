@@ -722,6 +722,7 @@
     <button class="btn" id="btnAdd">➕ 新增股票</button>
     <button class="btn" id="btnAi">🤖 AI</button>
     <button class="btn" id="btnTg">🔔 Telegram</button>
+    <button class="btn" id="btnFinnhub">🏛️ Finnhub</button>
     <button class="btn" id="btnServer">⚙️ Server</button>
     <div class="seg" id="viewSeg">
       <div class="opt active" data-view="stock">📊 個股</div>
@@ -1048,15 +1049,26 @@
     </div>
   </div>
 
-  <!-- ===== Insider Trading ===== -->
-  <div class="panel" style="margin-bottom:16px;">
-    <div class="panel-title">
-      <span class="dot" style="background:var(--gold); box-shadow:0 0 10px var(--gold);"></span>
-      🐳 內部人交易
-      <span class="small">SEC Form 4 · 近 180 天</span>
+  <!-- ===== Insider + Congress Trading ===== -->
+  <div class="hero" style="grid-template-columns: 1fr 1fr; margin-bottom:16px;">
+    <div class="panel" style="margin-bottom:0;">
+      <div class="panel-title">
+        <span class="dot" style="background:var(--gold); box-shadow:0 0 10px var(--gold);"></span>
+        🐳 內部人交易
+        <span class="small">SEC Form 4 · 180 天</span>
+      </div>
+      <div id="insiderSummary" style="display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap;"></div>
+      <div id="insiderList" style="font-size:12px; max-height:240px; overflow-y:auto;"></div>
     </div>
-    <div id="insiderSummary" style="display:flex; gap:14px; margin-bottom:10px; flex-wrap:wrap;"></div>
-    <div id="insiderList" style="font-size:12px; max-height:240px; overflow-y:auto;"></div>
+    <div class="panel" style="margin-bottom:0;">
+      <div class="panel-title">
+        <span class="dot" style="background:var(--magenta); box-shadow:0 0 10px var(--magenta);"></span>
+        🏛️ 國會議員交易
+        <span class="small">Finnhub · Top 10 追蹤</span>
+      </div>
+      <div id="congressSummary" style="display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap;"></div>
+      <div id="congressList" style="font-size:12px; max-height:240px; overflow-y:auto;"></div>
+    </div>
   </div>
 
   <!-- ===== News ===== -->
@@ -1169,6 +1181,7 @@
         <option value="win_rate">短線勝率 ≥ N% 的股</option>
         <option value="group">都買指定族群</option>
         <option value="hot_group">都買當日最熱族群</option>
+        <option value="follow_politician">跟單 Top 10 議員</option>
       </select>
 
       <label style="font-size:12px; color:var(--muted);">族群</label>
@@ -1304,6 +1317,26 @@
     <div class="actions">
       <button class="btn" data-close="holdingModal">取消</button>
       <button class="btn primary" id="btnHoldingSave">加入</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Modal: Finnhub (議員交易資料) ===== -->
+<div class="modal-mask" id="finnhubModal">
+  <div class="modal">
+    <h3>🏛️ Finnhub API Key 設定</h3>
+    <div id="finnhubStatus" style="font-size:12px; color:var(--muted); margin-bottom:8px;">— 載入中</div>
+    <label>Finnhub API Key</label>
+    <input type="password" id="finnhubKey" placeholder="c..." autocomplete="off">
+    <div class="hint">
+      用於議員交易資料 (`/stock/congressional-trading`)。<br>
+      免費註冊：<a href="https://finnhub.io/register" target="_blank" style="color:var(--cyan);">finnhub.io/register</a>（60 calls/min 免費 tier 夠用）。<br>
+      Top 10 追蹤：Pelosi / Crenshaw / Gottheimer / Tuberville / S. Lee / Mast /<br>
+      &nbsp;&nbsp;Fallon / Mark Green / Ro Khanna / McCaul
+    </div>
+    <div class="actions">
+      <button class="btn" data-close="finnhubModal">取消</button>
+      <button class="btn primary" id="btnFinnhubSave">儲存</button>
     </div>
   </div>
 </div>
@@ -1809,6 +1842,7 @@ async function loadStock(code) {
   loadNews(s.code);
   loadFundamentals(s.code);
   loadInsider(s.code);
+  loadCongress(s.code);
 
   // AI 評論：切股票時重置（不自動產生避免吃 token）
   document.getElementById("aiText").textContent = "點下方「✨ 產生評論」讓 AI 用即時指標 + 籌碼 + 訊號替你寫評估";
@@ -2069,6 +2103,7 @@ function bindToolbar() {
   document.getElementById("btnTg").addEventListener("click", () => openTelegramModal());
   document.getElementById("btnAi").addEventListener("click", () => openAiCfgModal());
   document.getElementById("btnServer").addEventListener("click", () => openServerModal());
+  document.getElementById("btnFinnhub").addEventListener("click", () => openFinnhubModal());
   document.getElementById("btnAlert").addEventListener("click", () => openAlertModal());
   document.getElementById("btnRemove").addEventListener("click", () => removeCurrentStock());
   document.getElementById("btnGenAi").addEventListener("click", () => generateAiComment());
@@ -2132,6 +2167,9 @@ function bindModals() {
   // Server URL config
   document.getElementById("btnServerSave").addEventListener("click", saveServerUrl);
   document.getElementById("btnServerTest").addEventListener("click", testServerUrl);
+
+  // Finnhub
+  document.getElementById("btnFinnhubSave").addEventListener("click", saveFinnhubKey);
 }
 
 /* ----- Add Stock ----- */
@@ -2713,6 +2751,88 @@ async function loadInsider(code) {
   } catch (e) {
     sumEl.innerHTML = `<div style="color:var(--red); font-size:12px;">載入失敗: ${e.message}</div>`;
   }
+}
+
+/* =========================================================================
+ * Congress trading panel (Finnhub)
+ * ======================================================================= */
+async function loadCongress(code) {
+  const sumEl = document.getElementById("congressSummary");
+  const listEl = document.getElementById("congressList");
+  sumEl.innerHTML = `<div style="color:var(--muted); font-size:12px;">📡 載入中...</div>`;
+  listEl.innerHTML = "";
+  try {
+    const d = await apiGet(`/api/congress/${code}`, 15000);
+    const s = d.summary || {};
+    if (s.error || s.configured === false) {
+      sumEl.innerHTML = `<div style="color:var(--orange); font-size:12px; padding: 8px;">
+        ⚠️ ${s.error || "未設定 Finnhub key"}<br>
+        點工具列「🏛️ Finnhub」按鈕設定免費 key
+      </div>`;
+      return;
+    }
+    sumEl.innerHTML = `
+      <div class="bt-metric" style="border-color:rgba(239,68,68,0.3); flex-basis: 100px;">
+        <div class="lbl">議員買進</div>
+        <div class="val" style="color:var(--red); font-size:20px;">${s.buy_count || 0}</div>
+        <div style="font-size:10px; color:var(--muted);">筆</div>
+      </div>
+      <div class="bt-metric" style="border-color:rgba(34,197,94,0.3); flex-basis: 100px;">
+        <div class="lbl">議員賣出</div>
+        <div class="val" style="color:var(--green); font-size:20px;">${s.sell_count || 0}</div>
+        <div style="font-size:10px; color:var(--muted);">筆</div>
+      </div>
+      <div class="bt-metric" style="flex-basis: 100px;">
+        <div class="lbl">追蹤議員</div>
+        <div class="val" style="font-size:20px;">${s.n_politicians || 0}</div>
+        <div style="font-size:10px; color:var(--muted);">${(s.politicians || []).slice(0,3).join(", ") || "—"}</div>
+      </div>`;
+    if (!d.transactions || !d.transactions.length) {
+      listEl.innerHTML = `<div style="color:var(--muted); padding:14px; text-align:center;">😴 Top 10 議員近 180 日無交易</div>`;
+      return;
+    }
+    listEl.innerHTML = d.transactions.map(t => {
+      const valColor = t.action === "buy" ? "buy" : t.action === "sell" ? "sell" : "";
+      const sign = t.action === "buy" ? "+" : t.action === "sell" ? "-" : "";
+      const rangeStr = t.amount_low && t.amount_high
+        ? `${sign}$${Math.round(t.amount_low/1000)}K~$${Math.round(t.amount_high/1000)}K`
+        : "—";
+      return `
+        <div class="insider-row">
+          <div class="date">${t.date}</div>
+          <div class="who">
+            <div style="font-weight:600;">${t.name}</div>
+            <div style="font-size:10px; color:var(--muted);">${t.tag} · ${t.owner || ""}</div>
+          </div>
+          <div class="val ${valColor}">${rangeStr}</div>
+        </div>`;
+    }).join("");
+  } catch (e) {
+    sumEl.innerHTML = `<div style="color:var(--red); font-size:12px;">載入失敗: ${e.message}</div>`;
+  }
+}
+
+async function openFinnhubModal() {
+  const stat = document.getElementById("finnhubStatus");
+  stat.textContent = "— 載入中";
+  try {
+    const cfg = await apiGet("/api/finnhub");
+    stat.innerHTML = cfg.configured
+      ? `✅ <span style="color:var(--green);">已設定 API key</span>`
+      : `⚠️ <span style="color:var(--orange);">尚未設定</span>（議員交易功能會 disable）`;
+  } catch { stat.textContent = "—"; }
+  openModal("finnhubModal");
+}
+async function saveFinnhubKey() {
+  const key = document.getElementById("finnhubKey").value.trim();
+  if (!key) { alert("請輸入 API Key"); return; }
+  try {
+    await apiSend("/api/finnhub", "POST", { api_key: key });
+    document.getElementById("finnhubKey").value = "";
+    closeModal("finnhubModal");
+    alert("✅ 已儲存。重新切換股票即可看到議員交易資料。");
+    if (state.activeCode) loadCongress(state.activeCode);
+  } catch (e) { alert("失敗: " + e.message); }
 }
 
 /* =========================================================================

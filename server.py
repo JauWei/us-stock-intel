@@ -38,6 +38,7 @@ ALERTS_FILE    = ROOT / "alerts.json"
 TELEGRAM_FILE  = ROOT / "telegram.json"
 PORTFOLIO_FILE = ROOT / "portfolio.json"
 GEMINI_FILE    = ROOT / "gemini.json"
+FINNHUB_FILE   = ROOT / "finnhub.json"
 
 # ----------------------------------------------------------------------------
 # Default watchlist (首次啟動時寫入 watchlist.json)
@@ -746,6 +747,146 @@ def insider_signals(code: str) -> list[dict]:
 
 
 # ----------------------------------------------------------------------------
+# 國會議員交易 (Finnhub free tier, /stock/congressional-trading)
+# ----------------------------------------------------------------------------
+def _get_finnhub_key() -> str:
+    cfg = load_json(FINNHUB_FILE, {})
+    return (cfg.get("api_key", "") or os.environ.get("FINNHUB_API_KEY", "")).strip()
+
+
+# 追蹤的 10 位代表性議員（被廣泛報導/有追蹤社群的）
+TRACKED_POLITICIANS = {
+    "Nancy Pelosi":      "D · House (CA)",
+    "Dan Crenshaw":      "R · House (TX)",
+    "Josh Gottheimer":   "D · House (NJ)",
+    "Tommy Tuberville":  "R · Senate (AL)",
+    "Susie Lee":         "D · House (NV)",
+    "Brian Mast":        "R · House (FL)",
+    "Patrick Fallon":    "R · House (TX)",
+    "Mark Green":        "R · House (TN)",
+    "Ro Khanna":         "D · House (CA)",
+    "Michael McCaul":    "R · House (TX)",
+}
+
+
+def _politician_match(name: str) -> str | None:
+    """寬鬆比對：把追蹤清單中包含於 name 的視為命中。"""
+    if not name:
+        return None
+    nl = name.lower()
+    for n in TRACKED_POLITICIANS:
+        if n.lower() in nl:
+            return n
+    return None
+
+
+def fetch_congress(code: str, days: int = 180) -> dict:
+    """近 N 天該股的議員交易 (僅 Top 10 追蹤清單)。
+    需要 Finnhub free key。"""
+    cache_key = f"congress:{code}:{days}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    key = _get_finnhub_key()
+    if not key:
+        return {"transactions": [], "summary": {"buy_count": 0, "sell_count": 0,
+                                                  "n_politicians": 0, "configured": False}}
+
+    wl = load_watchlist()
+    info = wl.get(code)
+    if not info:
+        raise HTTPException(404)
+    symbol = info["yf"]
+
+    try:
+        url = "https://finnhub.io/api/v1/stock/congressional-trading"
+        r = requests.get(url, params={"symbol": symbol, "token": key}, timeout=10)
+        if r.status_code == 401 or r.status_code == 403:
+            out = {"transactions": [], "summary": {"buy_count": 0, "sell_count": 0,
+                                                     "n_politicians": 0, "error": "Finnhub key 無效或無權限"}}
+            cache_set(cache_key, out)
+            return out
+        r.raise_for_status()
+        data = r.json().get("data", []) or []
+    except Exception as e:
+        print(f"[congress] {code}: {e}")
+        return {"transactions": [], "summary": {"buy_count": 0, "sell_count": 0,
+                                                  "n_politicians": 0, "error": str(e)}}
+
+    cutoff = pd.Timestamp.today() - pd.Timedelta(days=days)
+    txs = []
+    n_buy = n_sell = 0
+    seen_names = set()
+    for d in data:
+        matched = _politician_match(d.get("name", ""))
+        if not matched:
+            continue
+        try:
+            tx_date = pd.Timestamp(d.get("transactionDate") or d.get("filingDate") or "")
+        except Exception:
+            continue
+        if tx_date < cutoff:
+            continue
+        ttype = (d.get("transactionType") or "").lower()
+        is_buy  = "purchase" in ttype or "buy" in ttype
+        is_sell = "sale" in ttype or "sell" in ttype or "sold" in ttype
+        if is_buy:  n_buy += 1
+        if is_sell: n_sell += 1
+        seen_names.add(matched)
+        txs.append({
+            "name":      matched,
+            "tag":       TRACKED_POLITICIANS.get(matched, ""),
+            "date":      tx_date.strftime("%Y-%m-%d"),
+            "filing":    d.get("filingDate", ""),
+            "action":    "buy" if is_buy else ("sell" if is_sell else "other"),
+            "amount_low":  float(d.get("amountFrom", 0) or 0),
+            "amount_high": float(d.get("amountTo", 0) or 0),
+            "owner":     d.get("ownerType", ""),
+            "raw_type":  d.get("transactionType", ""),
+        })
+
+    txs.sort(key=lambda x: x["date"], reverse=True)
+    out = {
+        "code": code,
+        "days": days,
+        "transactions": txs[:50],
+        "summary": {
+            "buy_count":      n_buy,
+            "sell_count":     n_sell,
+            "n_politicians":  len(seen_names),
+            "politicians":    sorted(seen_names),
+            "configured":     True,
+        }
+    }
+    # cache 6 小時 (議員申報延遲，本來就不會頻繁更新)
+    _cache[cache_key] = (time.time() + 6 * 3600 - CACHE_TTL, out)
+    return out
+
+
+def congress_signals(code: str) -> list[dict]:
+    """根據近 90 日 Top 10 議員交易產生徽章。"""
+    try:
+        c = fetch_congress(code, days=90)
+    except Exception:
+        return []
+    s = c.get("summary", {})
+    if not s.get("configured"):
+        return []
+    sigs = []
+    bcnt = s.get("buy_count", 0)
+    scnt = s.get("sell_count", 0)
+    npols = s.get("n_politicians", 0)
+    if bcnt >= 2 and bcnt > scnt:
+        sigs.append({"key": "congress_buy_cluster", "label": f"🏛️ {npols}位議員齊買", "color": "red"})
+    elif bcnt >= 1 and bcnt > scnt:
+        sigs.append({"key": "congress_buy", "label": "🏛️ 議員買進", "color": "red"})
+    elif scnt >= 2:
+        sigs.append({"key": "congress_sell", "label": "🏛️ 議員賣出", "color": "green"})
+    return sigs
+
+
+# ----------------------------------------------------------------------------
 # 探測股票代號 (.TW 或 .TWO)
 # ----------------------------------------------------------------------------
 def probe_yfinance(code: str) -> dict | None:
@@ -898,6 +1039,8 @@ def fetch_summary(code: str) -> dict:
     sigs = detect_signals(closes, ma5_s, ma20_s, k_s, d_s, rsi_s, hist["High"], hist["Low"], period="D")
     # 加上內部人訊號（cache 1 hr，不會拖慢 summary 列表）
     sigs.extend(insider_signals(code))
+    # 議員交易訊號（需 Finnhub key，cache 6 hr）
+    sigs.extend(congress_signals(code))
 
     # 短線勝率啟發式 (與前端 winRate 計算一致)
     rsi_v = float(rsi_s.iloc[-1]) if not pd.isna(rsi_s.iloc[-1]) else 50.0
@@ -969,6 +1112,39 @@ def api_news(code: str):
 @app.get("/api/insider/{code}")
 def api_insider(code: str, days: int = 180):
     return fetch_insider(code, days=days)
+
+
+@app.get("/api/congress/{code}")
+def api_congress(code: str, days: int = 180):
+    return fetch_congress(code, days=days)
+
+
+@app.get("/api/congress")
+def api_congress_summary():
+    """Top 10 追蹤清單 + 是否已設 key。"""
+    return {
+        "configured":  bool(_get_finnhub_key()),
+        "politicians": TRACKED_POLITICIANS,
+    }
+
+
+class FinnhubReq(BaseModel):
+    api_key: str
+
+
+@app.post("/api/finnhub")
+def api_finnhub_set(req: FinnhubReq):
+    save_json(FINNHUB_FILE, {"api_key": req.api_key.strip()})
+    # 清掉 congress / summary cache 讓新 key 生效
+    for k in list(_cache.keys()):
+        if k.startswith("congress:") or k.startswith("summary:"):
+            _cache.pop(k, None)
+    return {"ok": True}
+
+
+@app.get("/api/finnhub")
+def api_finnhub_get():
+    return {"configured": bool(_get_finnhub_key())}
 
 
 @app.get("/api/groups")
@@ -1742,6 +1918,19 @@ def api_backtest(
     except Exception:
         bench = None
 
+    # follow_politician 策略：預先建好 code → [buy_dates] 索引
+    congress_buy_index: dict[str, list] = {}
+    if strategy == "follow_politician":
+        for c in codes:
+            try:
+                cdat = fetch_congress(c, days=400)  # 取整個回測期間
+                buys = [pd.Timestamp(t["date"]) for t in cdat.get("transactions", [])
+                        if t.get("action") == "buy"]
+                if buys:
+                    congress_buy_index[c] = buys
+            except Exception:
+                continue
+
     def signals_at_day(day_idx: int) -> list:
         if day_idx < 20:
             return []
@@ -1786,6 +1975,18 @@ def api_backtest(
             avgs = {g: sum(v)/len(v) for g, v in grp_returns.items() if v}
             best_g = max(avgs, key=avgs.get)
             return [c for c in closes.columns if (wl.get(c, {}).get("group") or "") == best_g]
+        if strategy == "follow_politician":
+            # 議員在過去 14 天內買進的股票
+            today_dt = closes.index[day_idx]
+            cutoff = today_dt - pd.Timedelta(days=14)
+            picks = set()
+            for c in closes.columns:
+                trades = congress_buy_index.get(c, [])
+                for t in trades:
+                    if cutoff <= t <= today_dt:
+                        picks.add(c)
+                        break
+            return list(picks)[:n_positions * 2]
         return []
 
     initial   = capital
