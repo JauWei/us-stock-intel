@@ -651,6 +651,101 @@ def fetch_news(code: str) -> list:
 
 
 # ----------------------------------------------------------------------------
+# 內部人交易 (yfinance.Ticker.insider_transactions，免 key 即時)
+# ----------------------------------------------------------------------------
+def fetch_insider(code: str, days: int = 180) -> dict:
+    """近 N 天的 SEC Form 4 內部人交易，分類 buy/sell 並算淨值。
+    cache 1 小時（內部人通常幾天才動一次）。
+    """
+    cache_key = f"insider:{code}:{days}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    wl = load_watchlist()
+    info = wl.get(code)
+    if not info:
+        return {"transactions": [], "summary": {"buy_value": 0, "sell_value": 0, "net_value": 0,
+                                                  "buy_count": 0, "sell_count": 0}}
+    try:
+        df = yf.Ticker(info["yf"]).insider_transactions
+    except Exception as e:
+        print(f"[insider] {code}: {e}")
+        df = None
+    if df is None or df.empty:
+        out = {"transactions": [], "summary": {"buy_value": 0, "sell_value": 0, "net_value": 0,
+                                                 "buy_count": 0, "sell_count": 0}}
+        cache_set(cache_key, out)
+        return out
+
+    df = df.copy()
+    df["Start Date"] = pd.to_datetime(df["Start Date"], errors="coerce")
+    df = df.dropna(subset=["Start Date"])
+    cutoff = pd.Timestamp.today() - pd.Timedelta(days=days)
+    df = df[df["Start Date"] >= cutoff].sort_values("Start Date", ascending=False)
+
+    buy_total = 0.0
+    sell_total = 0.0
+    txs = []
+    for _, r in df.iterrows():
+        txt = str(r.get("Text", ""))
+        if "Purchase" in txt or "Buy" in txt:
+            action = "buy"
+        elif "Sale" in txt or "Sell" in txt or "Sold" in txt:
+            action = "sell"
+        else:
+            action = "other"
+        val = float(r.get("Value", 0) or 0)
+        if action == "buy":  buy_total += val
+        elif action == "sell": sell_total += val
+        txs.append({
+            "date":     r["Start Date"].strftime("%Y-%m-%d"),
+            "insider":  str(r.get("Insider", "")),
+            "position": str(r.get("Position", "")),
+            "action":   action,
+            "shares":   int(r.get("Shares", 0) or 0),
+            "value":    int(val),
+            "text":     txt[:60],
+        })
+
+    net = buy_total - sell_total
+    out = {
+        "code": code,
+        "days": days,
+        "transactions": txs[:30],
+        "summary": {
+            "buy_value":  int(buy_total),
+            "sell_value": int(sell_total),
+            "net_value":  int(net),
+            "buy_count":  sum(1 for t in txs if t["action"] == "buy"),
+            "sell_count": sum(1 for t in txs if t["action"] == "sell"),
+            "total_count": len(txs),
+        }
+    }
+    # cache 1 小時
+    _cache[cache_key] = (time.time() + 3600 - CACHE_TTL, out)
+    return out
+
+
+def insider_signals(code: str) -> list[dict]:
+    """從近 90 日內部人交易產生訊號徽章。"""
+    try:
+        ins = fetch_insider(code, days=90)
+    except Exception:
+        return []
+    s = ins.get("summary", {})
+    net = s.get("net_value", 0)
+    sigs = []
+    if net >= 500_000:
+        sigs.append({"key": "insider_buy", "label": "🐳 內部人大買", "color": "red"})
+    elif net <= -5_000_000:
+        sigs.append({"key": "insider_sell_heavy", "label": "📉 內部人大賣", "color": "green"})
+    elif net <= -1_000_000:
+        sigs.append({"key": "insider_sell", "label": "⚠️ 內部人賣超", "color": "orange"})
+    return sigs
+
+
+# ----------------------------------------------------------------------------
 # 探測股票代號 (.TW 或 .TWO)
 # ----------------------------------------------------------------------------
 def probe_yfinance(code: str) -> dict | None:
@@ -801,6 +896,8 @@ def fetch_summary(code: str) -> dict:
     rsi_s  = rsi_indicator(closes, 14)
     k_s, d_s = kd_indicator(hist, 9)
     sigs = detect_signals(closes, ma5_s, ma20_s, k_s, d_s, rsi_s, hist["High"], hist["Low"], period="D")
+    # 加上內部人訊號（cache 1 hr，不會拖慢 summary 列表）
+    sigs.extend(insider_signals(code))
 
     # 短線勝率啟發式 (與前端 winRate 計算一致)
     rsi_v = float(rsi_s.iloc[-1]) if not pd.isna(rsi_s.iloc[-1]) else 50.0
@@ -867,6 +964,11 @@ def api_stock(code: str, period: str = "D"):
 @app.get("/api/news/{code}")
 def api_news(code: str):
     return fetch_news(code)
+
+
+@app.get("/api/insider/{code}")
+def api_insider(code: str, days: int = 180):
+    return fetch_insider(code, days=days)
 
 
 @app.get("/api/groups")
@@ -1565,6 +1667,252 @@ def api_index(period: str = "D"):
     }
     cache_set(cache_key, out)
     return out
+
+
+# ============================================================================
+# 7) Backtest engine
+# ============================================================================
+@app.get("/api/backtest")
+def api_backtest(
+    strategy:    str   = "momentum",   # momentum | meanrev | win_rate | group | hot_group
+    start:       str   = "",
+    end:         str   = "",
+    capital:     float = 100_000.0,
+    hold_days:   int   = 5,
+    n_positions: int   = 5,
+    threshold:   float = 65,           # for win_rate
+    group:       str   = "七巨頭",
+    universe:    str   = "watchlist",  # 'watchlist' | 'group:七巨頭' | ...
+):
+    """每日 simulate 的簡化回測引擎。
+    策略：
+      momentum  – 每日買漲幅前 N
+      meanrev   – 每日買跌幅前 N
+      win_rate  – 短線勝率 >= threshold 的所有股 (取 N 檔)
+      group     – 都買指定族群
+      hot_group – 都買當日漲幅最高的族群
+    持股 hold_days 天後賣出，等比配重，benchmark = ^GSPC。
+    """
+    if not start:
+        start = (pd.Timestamp.today() - pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+    if not end:
+        end = pd.Timestamp.today().strftime("%Y-%m-%d")
+
+    wl = load_watchlist()
+    if universe.startswith("group:"):
+        g = universe.split(":", 1)[1]
+        codes = [c for c, m in wl.items() if (m.get("group") or "") == g]
+    elif universe == "magseven":
+        codes = [c for c, m in wl.items() if (m.get("group") or "") == "七巨頭"]
+    else:
+        codes = list(wl.keys())
+    if not codes:
+        raise HTTPException(400, "Universe is empty")
+
+    yf_codes = [wl[c]["yf"] for c in codes]
+    cache_key = f"bt:{','.join(yf_codes)}:{start}:{end}"
+    closes = None
+    cached_prices = cache_get(cache_key)
+    if cached_prices is not None:
+        closes = cached_prices
+    else:
+        try:
+            data = yf.download(yf_codes, start=start, end=end, auto_adjust=False,
+                               progress=False, group_by="ticker", threads=True)
+        except Exception as e:
+            raise HTTPException(503, f"yfinance download fail: {e}")
+        closes = pd.DataFrame()
+        for c, yfc in zip(codes, yf_codes):
+            try:
+                col = data[yfc]["Close"] if len(yf_codes) > 1 else data["Close"]
+                closes[c] = col
+            except (KeyError, AttributeError):
+                continue
+        closes = closes.dropna(how="all")
+        _cache[cache_key] = (time.time() + 1800 - CACHE_TTL, closes)  # 30 min cache
+
+    if closes.empty or len(closes) < hold_days + 5:
+        raise HTTPException(503, "歷史資料不足")
+
+    try:
+        bench_raw = yf.download("^GSPC", start=start, end=end, auto_adjust=False, progress=False)
+        bench = bench_raw["Close"]
+        if hasattr(bench, 'columns'):  # 有時是 DataFrame 不是 Series
+            bench = bench.iloc[:, 0]
+    except Exception:
+        bench = None
+
+    def signals_at_day(day_idx: int) -> list:
+        if day_idx < 20:
+            return []
+        today_close = closes.iloc[day_idx]
+        prev_close  = closes.iloc[day_idx - 1]
+        day_returns = ((today_close - prev_close) / prev_close * 100).dropna()
+        if day_returns.empty:
+            return []
+
+        if strategy == "momentum":
+            return day_returns.nlargest(n_positions).index.tolist()
+        if strategy == "meanrev":
+            return day_returns.nsmallest(n_positions).index.tolist()
+        if strategy == "win_rate":
+            picks = []
+            for c in closes.columns:
+                hist = closes[c].iloc[:day_idx+1].dropna()
+                if len(hist) < 20: continue
+                ma5  = hist.iloc[-5:].mean()
+                ma20 = hist.iloc[-20:].mean()
+                delta = hist.diff().iloc[-14:].dropna()
+                gain = delta[delta > 0].sum()
+                loss = -delta[delta < 0].sum()
+                rsi = 100 - 100/(1 + (gain/loss)) if loss > 0 else 100
+                base = 50
+                if ma5 > ma20: base += 15
+                elif ma5 < ma20: base -= 15
+                if rsi > 70: base -= 10
+                elif rsi < 30: base += 10
+                if base >= threshold:
+                    picks.append((c, base))
+            picks.sort(key=lambda x: -x[1])
+            return [p[0] for p in picks[:n_positions]]
+        if strategy == "group":
+            return [c for c in closes.columns if (wl.get(c, {}).get("group") or "") == group]
+        if strategy == "hot_group":
+            grp_returns = {}
+            for c in day_returns.index:
+                g = wl.get(c, {}).get("group", "其他")
+                grp_returns.setdefault(g, []).append(day_returns[c])
+            if not grp_returns: return []
+            avgs = {g: sum(v)/len(v) for g, v in grp_returns.items() if v}
+            best_g = max(avgs, key=avgs.get)
+            return [c for c in closes.columns if (wl.get(c, {}).get("group") or "") == best_g]
+        return []
+
+    initial   = capital
+    cash      = capital
+    positions = {}
+    equity_curve = []
+    trades = []
+
+    dates = closes.index.tolist()
+    for day_idx, dt in enumerate(dates):
+        today_close = closes.iloc[day_idx]
+        # Close positions whose hold period reached
+        for code in list(positions.keys()):
+            pos = positions[code]
+            if day_idx - pos["entry_idx"] >= hold_days:
+                exit_p = today_close.get(code)
+                if exit_p is None or pd.isna(exit_p):
+                    continue
+                exit_p = float(exit_p)
+                cash += pos["shares"] * exit_p
+                trades.append({
+                    "code":       code,
+                    "open_date":  pos["entry_date"],
+                    "close_date": dt.strftime("%Y-%m-%d"),
+                    "entry":      round(pos["entry_price"], 2),
+                    "exit":       round(exit_p, 2),
+                    "shares":     round(pos["shares"], 2),
+                    "pnl":        round((exit_p - pos["entry_price"]) * pos["shares"], 0),
+                    "ret_pct":    round((exit_p - pos["entry_price"]) / pos["entry_price"] * 100, 2),
+                })
+                del positions[code]
+
+        # Open new positions
+        if len(positions) < n_positions:
+            buys = signals_at_day(day_idx)
+            for code in buys:
+                if code in positions: continue
+                if len(positions) >= n_positions: break
+                price = today_close.get(code)
+                if price is None or pd.isna(price): continue
+                price = float(price)
+                if price <= 0: continue
+                slot_value = min(capital / n_positions, cash)
+                if slot_value < 100: continue
+                shares = slot_value / price
+                cash -= shares * price
+                positions[code] = {
+                    "entry_date":  dt.strftime("%Y-%m-%d"),
+                    "entry_idx":   day_idx,
+                    "shares":      shares,
+                    "entry_price": price,
+                }
+
+        # Mark-to-market
+        mv = 0.0
+        for code, pos in positions.items():
+            p = today_close.get(code)
+            if p is None or pd.isna(p): p = pos["entry_price"]
+            mv += pos["shares"] * float(p)
+        equity = cash + mv
+
+        bench_v = None
+        if bench is not None and len(bench) > 0:
+            try:
+                base_b = float(bench.iloc[0])
+                cur_b = float(bench.loc[dt]) if dt in bench.index else None
+                if cur_b and base_b:
+                    bench_v = round(cur_b / base_b * initial, 0)
+            except Exception:
+                bench_v = None
+
+        equity_curve.append({
+            "date":      dt.strftime("%Y-%m-%d"),
+            "equity":    round(equity, 0),
+            "benchmark": bench_v,
+        })
+
+    # Summary
+    if equity_curve:
+        final_eq = equity_curve[-1]["equity"]
+        total_ret = (final_eq - initial) / initial * 100
+        peak, mdd = initial, 0
+        for e in equity_curve:
+            peak = max(peak, e["equity"])
+            dd = (e["equity"] - peak) / peak * 100
+            mdd = min(mdd, dd)
+        bench_final = equity_curve[-1].get("benchmark")
+        bench_ret = ((bench_final - initial) / initial * 100) if bench_final else None
+        winning = sum(1 for t in trades if t["ret_pct"] > 0)
+        wr = round(winning / len(trades) * 100, 1) if trades else 0
+        avg_win = round(sum(t["ret_pct"] for t in trades if t["ret_pct"] > 0) / max(winning, 1), 2)
+        loser_cnt = len(trades) - winning
+        avg_loss = round(sum(t["ret_pct"] for t in trades if t["ret_pct"] <= 0) / max(loser_cnt, 1), 2)
+    else:
+        final_eq, total_ret, mdd, bench_ret, wr, avg_win, avg_loss = initial, 0, 0, None, 0, 0, 0
+
+    # Downsample equity curve if too long
+    step = max(1, len(equity_curve) // 250)
+    ec_ds = equity_curve[::step]
+    if equity_curve and ec_ds[-1] != equity_curve[-1]:
+        ec_ds.append(equity_curve[-1])
+
+    return {
+        "strategy": strategy,
+        "params": {
+            "start": start, "end": end, "capital": initial,
+            "hold_days": hold_days, "n_positions": n_positions,
+            "threshold": threshold, "group": group, "universe": universe,
+        },
+        "summary": {
+            "start_date":       dates[0].strftime("%Y-%m-%d") if dates else "",
+            "end_date":         dates[-1].strftime("%Y-%m-%d") if dates else "",
+            "trading_days":     len(dates),
+            "initial_capital":  initial,
+            "final_equity":     final_eq,
+            "total_return":     round(total_ret, 2),
+            "benchmark_return": round(bench_ret, 2) if bench_ret is not None else None,
+            "alpha":            round(total_ret - bench_ret, 2) if bench_ret is not None else None,
+            "max_drawdown":     round(mdd, 2),
+            "win_rate":         wr,
+            "n_trades":         len(trades),
+            "avg_win":          avg_win,
+            "avg_loss":         avg_loss,
+        },
+        "equity_curve": ec_ds,
+        "trades": trades[-100:],
+    }
 
 
 @app.get("/")

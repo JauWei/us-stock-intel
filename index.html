@@ -613,6 +613,28 @@
   .pf-table th.sort-active { color: var(--cyan); background: var(--bg-3); }
   .pf-table th .sort-arrow { font-size: 9px; margin-left: 4px; opacity: 0.7; }
 
+  /* ====== Backtest ====== */
+  .backtest-view { display: none; }
+  .backtest-view.show { display: block; }
+  .bt-metric {
+    flex: 1 1 130px; padding: 12px;
+    background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px;
+  }
+  .bt-metric .lbl { font-size: 11px; color: var(--muted); }
+  .bt-metric .val { font-size: 22px; font-weight: 800; margin-top: 4px; }
+
+  /* ====== Insider panel ====== */
+  .insider-row {
+    display: flex; gap: 12px; padding: 6px 0; border-bottom: 1px dashed var(--line);
+    align-items: center;
+  }
+  .insider-row:last-child { border-bottom: none; }
+  .insider-row .date { color: var(--muted); width: 80px; font-size: 11px; }
+  .insider-row .who { flex: 1; min-width: 0; }
+  .insider-row .val { font-weight: 700; min-width: 100px; text-align: right; }
+  .insider-row .val.buy { color: var(--red); }
+  .insider-row .val.sell { color: var(--green); }
+
   /* ====== AI panel ====== */
   .ai-panel {
     border: 1px solid var(--purple); border-radius: 14px; padding: 14px;
@@ -706,6 +728,7 @@
       <div class="opt" data-view="rank">🔥 熱度榜</div>
       <div class="opt" data-view="heat">🌡 族群熱度</div>
       <div class="opt" data-view="pf">💼 我的持股</div>
+      <div class="opt" data-view="bt">📈 回測</div>
     </div>
   </div>
 
@@ -1025,6 +1048,17 @@
     </div>
   </div>
 
+  <!-- ===== Insider Trading ===== -->
+  <div class="panel" style="margin-bottom:16px;">
+    <div class="panel-title">
+      <span class="dot" style="background:var(--gold); box-shadow:0 0 10px var(--gold);"></span>
+      🐳 內部人交易
+      <span class="small">SEC Form 4 · 近 180 天</span>
+    </div>
+    <div id="insiderSummary" style="display:flex; gap:14px; margin-bottom:10px; flex-wrap:wrap;"></div>
+    <div id="insiderList" style="font-size:12px; max-height:240px; overflow-y:auto;"></div>
+  </div>
+
   <!-- ===== News ===== -->
   <div class="panel" style="margin-bottom:16px;">
     <div class="panel-title">
@@ -1115,6 +1149,62 @@
             <th class="sortable" data-sort="weight">權重</th>
             <th class="sortable" data-sort="trail_stop">移動停利</th>
             <th>備註</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ===== BACKTEST VIEW ===== -->
+  <div class="backtest-view" id="btView">
+    <div class="rank-controls" style="flex-wrap:wrap;">
+      <span style="color:var(--cyan); font-weight:700; letter-spacing:2px;">📈 策略回測</span>
+      <span class="spacer" style="flex:0 0 12px;"></span>
+
+      <label style="font-size:12px; color:var(--muted);">策略</label>
+      <select id="btStrategy" style="padding:6px 10px; background:var(--bg-2); color:var(--text); border:1px solid var(--line); border-radius:8px;">
+        <option value="momentum">每天買漲幅前 N 檔 (動能)</option>
+        <option value="meanrev">每天買跌幅前 N 檔 (反轉)</option>
+        <option value="win_rate">短線勝率 ≥ N% 的股</option>
+        <option value="group">都買指定族群</option>
+        <option value="hot_group">都買當日最熱族群</option>
+      </select>
+
+      <label style="font-size:12px; color:var(--muted);">族群</label>
+      <select id="btGroup" style="padding:6px 10px; background:var(--bg-2); color:var(--text); border:1px solid var(--line); border-radius:8px;">
+        <option value="七巨頭">七巨頭</option>
+        <option value="半導體">半導體</option>
+        <option value="AI 概念">AI 概念</option>
+        <option value="其他">其他</option>
+      </select>
+
+      <label style="font-size:12px; color:var(--muted);">起始日</label>
+      <input type="date" id="btStart" style="padding:5px 8px; background:var(--bg-2); color:var(--text); border:1px solid var(--line); border-radius:8px;">
+
+      <label style="font-size:12px; color:var(--muted);">持股 N 天</label>
+      <input type="number" id="btHold" value="5" min="1" max="60" style="width:70px; padding:5px 8px; background:var(--bg-2); color:var(--text); border:1px solid var(--line); border-radius:8px;">
+
+      <label style="font-size:12px; color:var(--muted);">部位數</label>
+      <input type="number" id="btN" value="5" min="1" max="16" style="width:60px; padding:5px 8px; background:var(--bg-2); color:var(--text); border:1px solid var(--line); border-radius:8px;">
+
+      <label style="font-size:12px; color:var(--muted);" id="btThLabel">門檻</label>
+      <input type="number" id="btThreshold" value="65" min="20" max="85" style="width:60px; padding:5px 8px; background:var(--bg-2); color:var(--text); border:1px solid var(--line); border-radius:8px;">
+
+      <span class="spacer"></span>
+      <button class="btn primary" id="btnBtRun">🚀 跑回測</button>
+    </div>
+
+    <div id="btSummary" style="margin-bottom: 14px;">
+      <div style="padding:30px; text-align:center; color:var(--muted);">選好策略 + 參數後按「🚀 跑回測」</div>
+    </div>
+    <div id="btChart" style="height: 360px;"></div>
+    <div style="overflow-x:auto; max-height: 360px;">
+      <table class="rank-table" id="btTrades" style="display:none;">
+        <thead>
+          <tr>
+            <th>進場日</th><th>出場日</th><th>代號</th>
+            <th>進價</th><th>出價</th><th>報酬</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -1502,10 +1592,12 @@ function switchView(v) {
   document.getElementById("rankView").classList.toggle("show", v === "rank");
   document.getElementById("heatView").classList.toggle("show", v === "heat");
   document.getElementById("pfView").classList.toggle("show", v === "pf");
+  document.getElementById("btView").classList.toggle("show", v === "bt");
 
   if (v === "rank")      loadRanking();
   else if (v === "heat") loadHeatmap();
   else if (v === "pf")   loadPortfolio();
+  else if (v === "bt")   initBtView();
   else if (state.activeCode) loadStock(state.activeCode);
 }
 
@@ -1716,6 +1808,7 @@ async function loadStock(code) {
   renderInstit(s);
   loadNews(s.code);
   loadFundamentals(s.code);
+  loadInsider(s.code);
 
   // AI 評論：切股票時重置（不自動產生避免吃 token）
   document.getElementById("aiText").textContent = "點下方「✨ 產生評論」讓 AI 用即時指標 + 籌碼 + 訊號替你寫評估";
@@ -1980,6 +2073,7 @@ function bindToolbar() {
   document.getElementById("btnRemove").addEventListener("click", () => removeCurrentStock());
   document.getElementById("btnGenAi").addEventListener("click", () => generateAiComment());
   document.getElementById("btnAddHolding").addEventListener("click", () => openModal("holdingModal"));
+  document.getElementById("btnBtRun").addEventListener("click", runBacktest);
 
   // TWII toggle
   document.getElementById("twiiToggle").addEventListener("click", () => {
@@ -2570,10 +2664,170 @@ function tickTime() {
   document.getElementById("updateTime").textContent = s;
 }
 
+/* =========================================================================
+ * Insider trading panel
+ * ======================================================================= */
+async function loadInsider(code) {
+  const sumEl = document.getElementById("insiderSummary");
+  const listEl = document.getElementById("insiderList");
+  sumEl.innerHTML = `<div style="color:var(--muted); font-size:12px;">📡 載入中...</div>`;
+  listEl.innerHTML = "";
+  try {
+    const d = await apiGet(`/api/insider/${code}`, 20000);
+    const s = d.summary || {};
+    const fmt = n => "$" + Math.round(Math.abs(n)).toLocaleString();
+    const netColor = s.net_value > 0 ? "var(--red)" : "var(--green)";
+    sumEl.innerHTML = `
+      <div class="bt-metric" style="border-color:rgba(239,68,68,0.3);">
+        <div class="lbl">買進總額 (180d)</div>
+        <div class="val" style="color:var(--red);">${fmt(s.buy_value || 0)}</div>
+        <div style="font-size:11px; color:var(--muted);">${s.buy_count || 0} 筆</div>
+      </div>
+      <div class="bt-metric" style="border-color:rgba(34,197,94,0.3);">
+        <div class="lbl">賣出總額</div>
+        <div class="val" style="color:var(--green);">${fmt(s.sell_value || 0)}</div>
+        <div style="font-size:11px; color:var(--muted);">${s.sell_count || 0} 筆</div>
+      </div>
+      <div class="bt-metric">
+        <div class="lbl">淨值 (買 − 賣)</div>
+        <div class="val" style="color:${netColor};">${(s.net_value || 0) >= 0 ? "+" : "-"}${fmt(s.net_value || 0)}</div>
+      </div>`;
+    if (!d.transactions || !d.transactions.length) {
+      listEl.innerHTML = `<div style="color:var(--muted); padding:14px; text-align:center;">😴 暫無近期內部人交易</div>`;
+      return;
+    }
+    listEl.innerHTML = d.transactions.map(t => {
+      const valColor = t.action === "buy" ? "buy" : t.action === "sell" ? "sell" : "";
+      const sign = t.action === "buy" ? "+" : t.action === "sell" ? "-" : "";
+      const valStr = t.value ? sign + "$" + Math.round(t.value).toLocaleString() : "—";
+      return `
+        <div class="insider-row">
+          <div class="date">${t.date}</div>
+          <div class="who">
+            <div style="font-weight:600;">${t.insider}</div>
+            <div style="font-size:10px; color:var(--muted);">${t.position}</div>
+          </div>
+          <div class="val ${valColor}">${valStr}<div style="font-size:10px; color:var(--muted); font-weight:400;">${t.shares.toLocaleString()} shares</div></div>
+        </div>`;
+    }).join("");
+  } catch (e) {
+    sumEl.innerHTML = `<div style="color:var(--red); font-size:12px;">載入失敗: ${e.message}</div>`;
+  }
+}
+
+/* =========================================================================
+ * Backtest
+ * ======================================================================= */
+let btChart;
+function initBtView() {
+  // 預設日期: 1 年前
+  const startEl = document.getElementById("btStart");
+  if (!startEl.value) {
+    const d = new Date(); d.setFullYear(d.getFullYear() - 1);
+    startEl.value = d.toISOString().slice(0, 10);
+  }
+  // 依策略隱藏不相關欄位
+  const stratEl = document.getElementById("btStrategy");
+  const groupEl = document.getElementById("btGroup").parentElement;
+  function updateVisibility() {
+    const v = stratEl.value;
+    const groupLbl = document.querySelector('label[for="btGroup"]');
+    document.getElementById("btGroup").style.display = (v === "group") ? "" : "none";
+    document.getElementById("btThreshold").style.display = (v === "win_rate") ? "" : "none";
+    document.getElementById("btThLabel").textContent = (v === "win_rate") ? "勝率 ≥" : "—";
+    document.getElementById("btThLabel").style.opacity = (v === "win_rate") ? "1" : "0.3";
+  }
+  stratEl.onchange = updateVisibility;
+  updateVisibility();
+}
+
+async function runBacktest() {
+  const params = new URLSearchParams({
+    strategy:    document.getElementById("btStrategy").value,
+    start:       document.getElementById("btStart").value,
+    hold_days:   document.getElementById("btHold").value,
+    n_positions: document.getElementById("btN").value,
+    threshold:   document.getElementById("btThreshold").value,
+    group:       document.getElementById("btGroup").value,
+    universe:    "watchlist",
+    capital:     100000,
+  });
+  const sumEl = document.getElementById("btSummary");
+  const tradesTb = document.querySelector("#btTrades tbody");
+  document.getElementById("btTrades").style.display = "none";
+  sumEl.innerHTML = `<div style="padding:30px; text-align:center; color:var(--muted);">🔄 跑回測中（約 5-15 秒）...</div>`;
+  try {
+    const r = await apiGet("/api/backtest?" + params.toString(), 60000);
+    const s = r.summary;
+    const fmt = n => Math.round(n).toLocaleString();
+    const retColor = s.total_return >= 0 ? "var(--red)" : "var(--green)";
+    const alphaColor = (s.alpha || 0) >= 0 ? "var(--red)" : "var(--green)";
+    sumEl.innerHTML = `
+      <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+        <div class="bt-metric"><div class="lbl">總報酬</div>
+          <div class="val" style="color:${retColor};">${s.total_return>=0?'+':''}${s.total_return}%</div>
+          <div style="font-size:11px; color:var(--muted);">$${fmt(s.initial_capital)} → $${fmt(s.final_equity)}</div></div>
+        <div class="bt-metric"><div class="lbl">vs S&P 500</div>
+          <div class="val" style="color:${alphaColor};">${(s.alpha||0)>=0?'+':''}${s.alpha}%</div>
+          <div style="font-size:11px; color:var(--muted);">S&P ${(s.benchmark_return||0)>=0?'+':''}${s.benchmark_return}%</div></div>
+        <div class="bt-metric"><div class="lbl">最大回撤</div>
+          <div class="val" style="color:var(--green);">${s.max_drawdown}%</div></div>
+        <div class="bt-metric"><div class="lbl">勝率</div>
+          <div class="val" style="color:var(--cyan);">${s.win_rate}%</div>
+          <div style="font-size:11px; color:var(--muted);">${s.n_trades} 筆 (均贏 +${s.avg_win}% / 均輸ㄉ ${s.avg_loss}%)</div></div>
+        <div class="bt-metric"><div class="lbl">期間</div>
+          <div class="val" style="font-size:14px;">${s.start_date} → ${s.end_date}</div>
+          <div style="font-size:11px; color:var(--muted);">${s.trading_days} 交易日</div></div>
+      </div>`;
+
+    // Equity curve chart
+    const dates = r.equity_curve.map(p => p.date);
+    const eq = r.equity_curve.map(p => p.equity);
+    const bn = r.equity_curve.map(p => p.benchmark);
+    const opt = {
+      backgroundColor: "transparent",
+      legend: { data: ["策略", "S&P 500 基準"], textStyle: { color: "#8a93a8" }, top: 4 },
+      tooltip: { trigger: "axis", backgroundColor: "rgba(10,14,28,0.95)",
+        borderColor: "#22d3ee", textStyle: { color: "#e7ecf7" } },
+      grid: { left: "8%", right: "5%", top: 40, bottom: 30 },
+      xAxis: { type: "category", data: dates, axisLine: { lineStyle: { color: "#1f2a44" } },
+        axisLabel: { color: "#8a93a8", fontSize: 10 } },
+      yAxis: { scale: true, axisLabel: { color: "#8a93a8" },
+        splitLine: { lineStyle: { color: "#1f2a44", type: "dashed" } } },
+      series: [
+        { name: "策略", type: "line", data: eq, smooth: true, symbol: "none",
+          lineStyle: { color: "#22d3ee", width: 2 },
+          areaStyle: { color: "rgba(34,211,238,0.10)" } },
+        { name: "S&P 500 基準", type: "line", data: bn, smooth: true, symbol: "none",
+          lineStyle: { color: "#f472b6", width: 1.5, type: "dashed" } },
+      ],
+    };
+    if (!btChart) btChart = echarts.init(document.getElementById("btChart"));
+    btChart.setOption(opt, true);
+
+    // Trades table
+    if (r.trades && r.trades.length) {
+      document.getElementById("btTrades").style.display = "";
+      tradesTb.innerHTML = r.trades.slice().reverse().map(t => {
+        const rc = t.ret_pct >= 0 ? "var(--red)" : "var(--green)";
+        return `<tr>
+          <td>${t.open_date}</td><td>${t.close_date}</td>
+          <td><strong style="color:var(--yellow);">${t.code}</strong></td>
+          <td>${t.entry}</td><td>${t.exit}</td>
+          <td style="color:${rc}; font-weight:700;">${t.ret_pct>=0?'+':''}${t.ret_pct}%</td>
+        </tr>`;
+      }).join("");
+    }
+  } catch (e) {
+    sumEl.innerHTML = `<div style="color:var(--red); padding:20px;">回測失敗: ${e.message}</div>`;
+  }
+}
+
 /* ============== Boot ============== */
 window.addEventListener("DOMContentLoaded", boot);
 window.addEventListener("resize", () => {
   klineChart && klineChart.resize();
+  btChart && btChart.resize();
   institChart && institChart.resize();
   revChart && revChart.resize();
   epsChart && epsChart.resize();
