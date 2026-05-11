@@ -1205,7 +1205,8 @@ def api_get_portfolio():
         })
     for h in holdings:
         h["weight"] = round(h["value"] / total_value * 100, 1) if total_value > 0 else 0
-    holdings.sort(key=lambda x: -x["value"])
+    # 預設按名稱字母排（前端可再以欄位點擊重新排序）
+    holdings.sort(key=lambda x: (x.get("name") or x.get("code") or "").lower())
 
     summary = {
         "total_cost":    round(total_cost, 0),
