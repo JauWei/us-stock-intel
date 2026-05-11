@@ -1943,10 +1943,11 @@ function renderInstit(s) {
  * ======================================================================= */
 async function loadNews(code) {
   const el = document.getElementById("newsList");
-  el.innerHTML = `<div class="news-empty">📡 載入中...</div>`;
+  el.innerHTML = `<div class="news-empty">📡 載入中（首次翻譯可能需 5-15 秒）...</div>`;
   try {
-    const news = await apiGet(`/api/news/${code}`);
-    if (!news.length) {
+    // 首次翻譯 Gemini / Google Translate 需要時間，給 45 秒寬鬆
+    const news = await apiGet(`/api/news/${code}`, 45000);
+    if (!Array.isArray(news) || !news.length) {
       el.innerHTML = `<div class="news-empty">😴 暫無新聞</div>`;
       return;
     }
@@ -1954,17 +1955,18 @@ async function loadNews(code) {
       const t = n.time ? new Date(n.time * 1000) : null;
       const tStr = t ? `${t.getMonth()+1}/${t.getDate()} ${String(t.getHours()).padStart(2,"0")}:${String(t.getMinutes()).padStart(2,"0")}` : "";
       const link = n.link || "#";
+      const origAttr = n.title_orig && n.title_orig !== n.title ? ` title="原文：${n.title_orig.replace(/"/g, '&quot;')}"` : "";
       return `
         <div class="news-item">
           <div class="icon">📰</div>
           <div class="body">
-            <a href="${link}" target="_blank" rel="noopener">${n.title || "(無標題)"}</a>
+            <a href="${link}" target="_blank" rel="noopener"${origAttr}>${n.title || "(無標題)"}</a>
             <div class="meta">${n.publisher || "—"}${tStr ? " · " + tStr : ""}</div>
           </div>
         </div>`;
     }).join("");
   } catch (e) {
-    el.innerHTML = `<div class="news-empty">⚠️ 新聞載入失敗</div>`;
+    el.innerHTML = `<div class="news-empty">⚠️ 新聞載入失敗：${e.message}</div>`;
   }
 }
 
