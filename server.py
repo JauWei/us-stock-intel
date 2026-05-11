@@ -1664,16 +1664,20 @@ def api_ai_comment(code: str):
     except Exception as e:
         raise HTTPException(503, str(e))
 
-    portfolio = load_portfolio()
-    holding = portfolio.get(code)
+    portfolio = load_portfolio()  # list (multi-entry)
+    holdings_of_code = [h for h in portfolio if h.get("code") == code]
 
     sigs = "、".join(s["label"] for s in d.get("signals", [])) or "無強烈訊號"
     pos = ""
-    if holding:
-        cost = holding["cost_price"]
-        ret = (d["price"] - cost) / cost * 100
-        pos = (f"\n使用者持股：{holding['shares']} 張，成本 {cost}，"
-               f"目前損益 {ret:+.2f}%")
+    if holdings_of_code:
+        total_shares = sum(float(h.get("shares", 0)) for h in holdings_of_code)
+        total_cost   = sum(float(h.get("shares", 0)) * float(h.get("cost_price", 0))
+                           for h in holdings_of_code)
+        avg_cost = total_cost / total_shares if total_shares > 0 else 0
+        ret = (d["price"] - avg_cost) / avg_cost * 100 if avg_cost else 0
+        n = len(holdings_of_code)
+        pos = (f"\n使用者持股：{total_shares} 股 ({n} 筆)，"
+               f"平均成本 {avg_cost:.2f}，目前損益 {ret:+.2f}%")
 
     prompt = f"""你是美股技術分析助理。用 4-6 句繁體中文評論以下個股，最後給「短線操作建議」一句話。
 請避免免責聲明、不要列點，直接給結論。
