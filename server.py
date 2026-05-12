@@ -731,6 +731,86 @@ def fetch_insider(code: str, days: int = 180) -> dict:
     return out
 
 
+# ----------------------------------------------------------------------------
+# 13F 機構持股 (yfinance Ticker.institutional_holders / major_holders)
+# ----------------------------------------------------------------------------
+def fetch_institutional_holders(code: str) -> dict:
+    """Top 10 機構持股 + Top 5 mutual fund + 整體機構/內部人 %。
+    SEC 13F 是季報延遲 45 天，cache 6 小時即可。
+    """
+    cache_key = f"inst13f:{code}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    wl = load_watchlist()
+    info = wl.get(code)
+    if not info:
+        raise HTTPException(404)
+    try:
+        t = yf.Ticker(info["yf"])
+        inst_df = t.institutional_holders
+        mf_df   = t.mutualfund_holders
+        major   = t.major_holders
+    except Exception as e:
+        print(f"[13F] {code}: {e}")
+        inst_df = mf_df = major = None
+
+    def parse_holder(df, top_n):
+        out = []
+        if df is None or df.empty:
+            return out
+        for _, r in df.head(top_n).iterrows():
+            shares = r.get("Shares")
+            value  = r.get("Value")
+            pct_h  = r.get("pctHeld")
+            pct_c  = r.get("pctChange")
+            date_r = r.get("Date Reported")
+            out.append({
+                "holder":     str(r.get("Holder", "")),
+                "shares":     int(shares) if pd.notna(shares) else 0,
+                "value":      int(value)  if pd.notna(value)  else 0,
+                "pct_held":   round(float(pct_h) * 100, 2) if pd.notna(pct_h) else 0,
+                "pct_change": round(float(pct_c) * 100, 2) if pd.notna(pct_c) else 0,
+                "date":       str(date_r) if pd.notna(date_r) else "",
+            })
+        return out
+
+    inst = parse_holder(inst_df, 10)
+    mf   = parse_holder(mf_df, 5)
+
+    pct_insider = pct_institutions = 0.0
+    n_institutions = 0
+    if major is not None and not major.empty:
+        try:
+            if "insidersPercentHeld" in major.index:
+                pct_insider = float(major.loc["insidersPercentHeld"].iloc[0]) * 100
+            if "institutionsPercentHeld" in major.index:
+                pct_institutions = float(major.loc["institutionsPercentHeld"].iloc[0]) * 100
+            if "institutionsCount" in major.index:
+                n_institutions = int(major.loc["institutionsCount"].iloc[0])
+        except Exception:
+            pass
+
+    top10_pct = sum(h["pct_held"] for h in inst)
+
+    out = {
+        "code": code,
+        "institutional": inst,
+        "mutualfund":    mf,
+        "summary": {
+            "pct_insider":      round(pct_insider, 2),
+            "pct_institutions": round(pct_institutions, 2),
+            "top10_pct":        round(top10_pct, 2),
+            "n_institutions":   n_institutions,
+            "n_top_holders":    len(inst),
+        }
+    }
+    # cache 6 小時 (13F 季報，每天頂多動一兩家)
+    _cache[cache_key] = (time.time() + 6 * 3600 - CACHE_TTL, out)
+    return out
+
+
 def insider_signals(code: str) -> list[dict]:
     """從近 90 日內部人交易產生訊號徽章。"""
     try:
@@ -975,6 +1055,12 @@ def api_insider(code: str, days: int = 180):
     return fetch_insider(code, days=days)
 
 
+@app.get("/api/institutional/{code}")
+def api_institutional(code: str):
+    """Top 10 機構持股 + Top 5 mutual fund + 整體 % (13F 來自 yfinance)。"""
+    return fetch_institutional_holders(code)
+
+
 @app.get("/api/groups")
 def api_groups():
     """族群清單 + 每族群成員代號。"""
@@ -1013,6 +1099,14 @@ def api_ranking(by: str = "change"):
             win_rate = max(20, min(85, base))
             ma20 = d.get("ma20", 0) or 1
             bias = (d["price"] - ma20) / ma20 * 100 if ma20 else 0
+            # 13F 共識度（cache 6 hr）
+            inst_pct = inst_top10 = 0
+            try:
+                ih = fetch_institutional_holders(code)
+                inst_pct   = ih["summary"].get("pct_institutions", 0)
+                inst_top10 = ih["summary"].get("top10_pct", 0)
+            except Exception:
+                pass
             items.append({
                 "code":       code,
                 "name":       d["name"],
@@ -1033,6 +1127,8 @@ def api_ranking(by: str = "change"):
                 "win_rate":   win_rate,
                 "bias":       round(bias, 2),
                 "risk":       d["risk"],
+                "inst_pct":    inst_pct,
+                "inst_top10":  inst_top10,
             })
         except Exception:
             pass
@@ -1047,6 +1143,8 @@ def api_ranking(by: str = "change"):
         "win":      lambda x: -x["win_rate"],
         "signals":  lambda x: -x["signal_count"],
         "bias":     lambda x: -abs(x["bias"]),
+        "inst":     lambda x: -x["inst_pct"],       # 機構持股比例
+        "inst10":   lambda x: -x["inst_top10"],     # Top 10 集中度
     }
     items.sort(key=keymap.get(by, keymap["change"]))
     return items

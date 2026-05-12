@@ -1048,15 +1048,26 @@
     </div>
   </div>
 
-  <!-- ===== Insider Trading ===== -->
-  <div class="panel" style="margin-bottom:16px;">
-    <div class="panel-title">
-      <span class="dot" style="background:var(--gold); box-shadow:0 0 10px var(--gold);"></span>
-      🐳 內部人交易
-      <span class="small">SEC Form 4 · 近 180 天 · yfinance</span>
+  <!-- ===== Insider + Institutional (13F) ===== -->
+  <div class="hero" style="grid-template-columns: 1fr 1fr; margin-bottom:16px;">
+    <div class="panel" style="margin-bottom:0;">
+      <div class="panel-title">
+        <span class="dot" style="background:var(--gold); box-shadow:0 0 10px var(--gold);"></span>
+        🐳 內部人交易
+        <span class="small">SEC Form 4 · 180 天</span>
+      </div>
+      <div id="insiderSummary" style="display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap;"></div>
+      <div id="insiderList" style="font-size:12px; max-height:240px; overflow-y:auto;"></div>
     </div>
-    <div id="insiderSummary" style="display:flex; gap:14px; margin-bottom:10px; flex-wrap:wrap;"></div>
-    <div id="insiderList" style="font-size:12px; max-height:280px; overflow-y:auto;"></div>
+    <div class="panel" style="margin-bottom:0;">
+      <div class="panel-title">
+        <span class="dot" style="background:var(--purple); box-shadow:0 0 10px var(--purple);"></span>
+        🐋 機構持股 (13F)
+        <span class="small">Top 10 · yfinance</span>
+      </div>
+      <div id="instSummary" style="display:flex; gap:8px; margin-bottom:10px; flex-wrap:wrap;"></div>
+      <div id="instList" style="font-size:12px; max-height:240px; overflow-y:auto;"></div>
+    </div>
   </div>
 
   <!-- ===== News ===== -->
@@ -1089,6 +1100,8 @@
         <div class="opt" data-by="fi">Strong Buy</div>
         <div class="opt" data-by="rsi">RSI 高</div>
         <div class="opt" data-by="rsi_low">RSI 低</div>
+        <div class="opt" data-by="inst">🐋 機構持股 %</div>
+        <div class="opt" data-by="inst10">🐋 Top10 集中度</div>
       </div>
       <span class="spacer"></span>
       <span style="font-size:12px; color:var(--muted);" id="rankCount">—</span>
@@ -1099,7 +1112,7 @@
           <tr>
             <th>排名</th><th>代號</th><th>名稱</th><th>族群</th>
             <th>價格</th><th>漲跌幅</th><th>成交量</th>
-            <th>評等</th><th>RSI</th><th>趨勢</th><th>訊號</th>
+            <th>評等</th><th>RSI</th><th>趨勢</th><th>🐋 機構%</th><th>訊號</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -1809,6 +1822,7 @@ async function loadStock(code) {
   loadNews(s.code);
   loadFundamentals(s.code);
   loadInsider(s.code);
+  loadInstitutional(s.code);
 
   // AI 評論：切股票時重置（不自動產生避免吃 token）
   document.getElementById("aiText").textContent = "點下方「✨ 產生評論」讓 AI 用即時指標 + 籌碼 + 訊號替你寫評估";
@@ -2004,18 +2018,20 @@ function updatePatterns(s) {
  * ======================================================================= */
 async function loadRanking(by = "change") {
   const tbody = document.querySelector("#rankTable tbody");
-  tbody.innerHTML = `<tr><td colspan="11" style="padding:30px; color:var(--muted);">📡 載入中...</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="12" style="padding:30px; color:var(--muted);">📡 載入中（首次抓 13F 約 10-30 秒）...</td></tr>`;
   try {
-    const items = await apiGet(`/api/ranking?by=${by}`);
+    const items = await apiGet(`/api/ranking?by=${by}`, 60000);
     document.getElementById("rankCount").textContent = items.length + " 檔";
     tbody.innerHTML = items.map((r, i) => {
       const rankCls = i === 0 ? "gold" : i === 1 ? "silver" : i === 2 ? "bronze" : "normal";
       const pctCls = r.change_pct >= 0 ? "up" : "down";
       const pctStr = (r.change_pct >= 0 ? "+" : "") + r.change_pct.toFixed(2) + "%";
-      const fiCls = r.fi_today >= 0 ? "up" : "down";
       const fiStr = (r.fi_today >= 0 ? "+" : "") + r.fi_today.toLocaleString();
       const sigs = (r.signals || []).slice(0, 3).map(s =>
         `<span class="badge ${s.color || 'cyan'}" style="margin-right:2px;">${s.label}</span>`).join("") || "—";
+      const inst = (r.inst_pct || 0).toFixed(1);
+      const inst10 = (r.inst_top10 || 0).toFixed(1);
+      const isInstSort = (by === "inst" || by === "inst10");
       return `
         <tr data-code="${r.code}">
           <td><span class="rank-num ${rankCls}">${i+1}</span></td>
@@ -2023,14 +2039,15 @@ async function loadRanking(by = "change") {
           <td>${r.name}</td>
           <td><span style="font-size:11px; color:var(--muted);">${r.group || '—'}</span></td>
           <td>${r.price.toFixed(2)}</td>
-          <td class="pct-cell ${pctCls === 'up' ? '' : 'down'}" style="color:${r.change_pct>=0?'var(--red)':'var(--green)'}">${pctStr}</td>
+          <td class="pct-cell" style="color:${r.change_pct>=0?'var(--red)':'var(--green)'}">${pctStr}</td>
           <td>${r.volume.toLocaleString()}</td>
           <td style="color:${r.fi_today>=0?'var(--red)':'var(--green)'}">${fiStr}</td>
           <td>${r.rsi.toFixed(1)}</td>
           <td><span style="font-size:11px;">${r.trend}</span></td>
+          <td style="color:var(--purple); font-weight:${isInstSort?'700':'400'};">${inst}% <span style="font-size:10px; color:var(--muted);">(T10:${inst10}%)</span></td>
           <td style="text-align:left;">${sigs}</td>
         </tr>`;
-    }).join("") || `<tr><td colspan="11" style="padding:30px; color:var(--muted);">無資料</td></tr>`;
+    }).join("") || `<tr><td colspan="12" style="padding:30px; color:var(--muted);">無資料</td></tr>`;
     tbody.querySelectorAll("tr[data-code]").forEach(tr => {
       tr.addEventListener("click", () => {
         state.activeCode = tr.dataset.code;
@@ -2710,6 +2727,62 @@ async function loadInsider(code) {
             <div style="font-size:10px; color:var(--muted);">${t.position}</div>
           </div>
           <div class="val ${valColor}">${valStr}<div style="font-size:10px; color:var(--muted); font-weight:400;">${t.shares.toLocaleString()} shares</div></div>
+        </div>`;
+    }).join("");
+  } catch (e) {
+    sumEl.innerHTML = `<div style="color:var(--red); font-size:12px;">載入失敗: ${e.message}</div>`;
+  }
+}
+
+/* =========================================================================
+ * Institutional holders panel (13F)
+ * ======================================================================= */
+async function loadInstitutional(code) {
+  const sumEl = document.getElementById("instSummary");
+  const listEl = document.getElementById("instList");
+  sumEl.innerHTML = `<div style="color:var(--muted); font-size:12px;">📡 載入中（首次 5-15 秒）...</div>`;
+  listEl.innerHTML = "";
+  try {
+    const d = await apiGet(`/api/institutional/${code}`, 30000);
+    const s = d.summary || {};
+    sumEl.innerHTML = `
+      <div class="bt-metric" style="border-color:rgba(167,139,250,0.3); flex-basis: 110px;">
+        <div class="lbl">機構持股</div>
+        <div class="val" style="color:var(--purple); font-size:22px;">${s.pct_institutions}%</div>
+        <div style="font-size:10px; color:var(--muted);">${(s.n_institutions||0).toLocaleString()} 家機構</div>
+      </div>
+      <div class="bt-metric" style="flex-basis: 110px;">
+        <div class="lbl">Top10 集中度</div>
+        <div class="val" style="color:var(--cyan); font-size:22px;">${s.top10_pct}%</div>
+        <div style="font-size:10px; color:var(--muted);">前 10 大持股加總</div>
+      </div>
+      <div class="bt-metric" style="flex-basis: 110px;">
+        <div class="lbl">內部人持股</div>
+        <div class="val" style="color:var(--gold); font-size:22px;">${s.pct_insider}%</div>
+        <div style="font-size:10px; color:var(--muted);">高管+大股東</div>
+      </div>`;
+    if (!d.institutional || !d.institutional.length) {
+      listEl.innerHTML = `<div style="color:var(--muted); padding:14px; text-align:center;">😴 暫無機構持股資料</div>`;
+      return;
+    }
+    const fmt = v => v >= 1e9 ? `$${(v/1e9).toFixed(2)}B` : v >= 1e6 ? `$${(v/1e6).toFixed(1)}M` : `$${v.toLocaleString()}`;
+    listEl.innerHTML = d.institutional.map((h, i) => {
+      const chCls = h.pct_change > 0 ? "buy" : h.pct_change < 0 ? "sell" : "";
+      const chSign = h.pct_change > 0 ? "↑+" : h.pct_change < 0 ? "↓" : "";
+      const chStr = h.pct_change !== 0 ? `${chSign}${h.pct_change.toFixed(1)}%` : "—";
+      return `
+        <div class="insider-row">
+          <div style="width:24px; color:var(--muted); font-size:11px;">#${i+1}</div>
+          <div class="who">
+            <div style="font-weight:600; font-size:12px;">${h.holder}</div>
+            <div style="font-size:10px; color:var(--muted);">
+              ${(h.shares/1e6).toFixed(1)}M shares · ${fmt(h.value)} · ${h.date || ''}
+            </div>
+          </div>
+          <div class="val ${chCls}" style="min-width:80px;">
+            ${h.pct_held.toFixed(2)}%
+            <div style="font-size:10px; font-weight:400;">${chStr}</div>
+          </div>
         </div>`;
     }).join("");
   } catch (e) {
