@@ -1594,6 +1594,35 @@ def api_ai_comment(code: str):
     holdings_of_code = [h for h in portfolio if h.get("code") == code]
 
     sigs = "、".join(s["label"] for s in d.get("signals", [])) or "無強烈訊號"
+
+    # 內部人交易具體數字 (近 6 個月)
+    insider_line = ""
+    try:
+        ins = fetch_insider(code, days=180)
+        s = ins["summary"]
+        if s.get("total_count", 0) > 0:
+            net = s["net_value"]
+            net_str = f"+${net/1e6:.1f}M" if net >= 0 else f"-${abs(net)/1e6:.1f}M"
+            insider_line = (f"\n內部人 6 個月：淨值 {net_str}"
+                            f"（買 {s['buy_count']} 筆 ${s['buy_value']/1e6:.1f}M, "
+                            f"賣 {s['sell_count']} 筆 ${s['sell_value']/1e6:.1f}M）")
+    except Exception:
+        pass
+
+    # 13F 機構持股共識度
+    inst_line = ""
+    try:
+        ih = fetch_institutional_holders(code)
+        isum = ih["summary"]
+        if isum.get("pct_institutions", 0) > 0:
+            top_holder = ih["institutional"][0]["holder"] if ih.get("institutional") else "—"
+            inst_line = (f"\n13F 機構共識：總機構 {isum['pct_institutions']}% / "
+                         f"Top 10 集中 {isum['top10_pct']}% / 內部人 {isum['pct_insider']}% "
+                         f"(最大持有: {top_holder[:30]})")
+    except Exception:
+        pass
+
+    # 使用者持股 + 移動停利建議
     pos = ""
     if holdings_of_code:
         total_shares = sum(float(h.get("shares", 0)) for h in holdings_of_code)
@@ -1602,11 +1631,12 @@ def api_ai_comment(code: str):
         avg_cost = total_cost / total_shares if total_shares > 0 else 0
         ret = (d["price"] - avg_cost) / avg_cost * 100 if avg_cost else 0
         n = len(holdings_of_code)
-        pos = (f"\n使用者持股：{total_shares} 股 ({n} 筆)，"
-               f"平均成本 {avg_cost:.2f}，目前損益 {ret:+.2f}%")
+        trail = _trailing_stop_advice(d.get("yf", code), "", avg_cost, d["price"])
+        pos = (f"\n使用者持股：{total_shares} 股 ({n} 筆)，平均成本 ${avg_cost:.2f}，"
+               f"損益 {ret:+.2f}%，移動停利建議：{trail.get('rule','—')}")
 
     prompt = f"""你是美股技術分析助理。用 4-6 句繁體中文評論以下個股，最後給「短線操作建議」一句話。
-請避免免責聲明、不要列點，直接給結論。
+請避免免責聲明、不要列點，直接給結論。評論時請綜合技術面 + 籌碼面 (內部人 + 13F 機構)。
 
 【{d['name']} ({d['code']}) {d['tag']}】
 收盤 ${d['price']}（前日 ${d['prev']}, {(d['price']-d['prev'])/d['prev']*100:+.2f}%）
@@ -1615,7 +1645,7 @@ RSI(14) = {d['rsi']}, KD(9,3) K/D = {d['kd_k']}/{d['kd_d']}, MACD {d['macd']}
 量能變化 {d['volChange']:+.1f}%（5 日均量 {d['avgVol']:,} 股）
 分析師評等：Strong Buy 累計 {d['chip']['fi_10']} 家、Buy {d['chip']['it_10']} 家
 近期訊號：{sigs}
-壓力 ${d['resist']} / 支撐 ${d['support']}{pos}
+壓力 ${d['resist']} / 支撐 ${d['support']}{insider_line}{inst_line}{pos}
 """
     try:
         text = _gemini_call(key, prompt)
