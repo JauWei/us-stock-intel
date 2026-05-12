@@ -1070,6 +1070,17 @@
     </div>
   </div>
 
+  <!-- ===== 估值 (Valuation) ===== -->
+  <div class="panel" style="margin-bottom:16px;">
+    <div class="panel-title">
+      <span class="dot" style="background:var(--green); box-shadow:0 0 10px var(--green);"></span>
+      💰 估值指標
+      <span class="small">P/E · PEG · P/B · yfinance · 配族群中位數</span>
+    </div>
+    <div id="valnGrid" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
+    <div id="valnNote" style="font-size:11px; color:var(--muted); margin-top:8px;"></div>
+  </div>
+
   <!-- ===== News ===== -->
   <div class="panel" style="margin-bottom:16px;">
     <div class="panel-title">
@@ -1102,6 +1113,8 @@
         <div class="opt" data-by="rsi_low">RSI 低</div>
         <div class="opt" data-by="inst">🐋 機構持股 %</div>
         <div class="opt" data-by="inst10">🐋 Top10 集中度</div>
+        <div class="opt" data-by="peg">💰 PEG 最低</div>
+        <div class="opt" data-by="relpe">💰 同族群最便宜</div>
       </div>
       <span class="spacer"></span>
       <span style="font-size:12px; color:var(--muted);" id="rankCount">—</span>
@@ -1112,7 +1125,7 @@
           <tr>
             <th>排名</th><th>代號</th><th>名稱</th><th>族群</th>
             <th>價格</th><th>漲跌幅</th><th>成交量</th>
-            <th>評等</th><th>RSI</th><th>趨勢</th><th>🐋 機構%</th><th>訊號</th>
+            <th>評等</th><th>RSI</th><th>趨勢</th><th>🐋 機構%</th><th>💰 PEG / 相對 PE</th><th>訊號</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -1823,6 +1836,7 @@ async function loadStock(code) {
   loadFundamentals(s.code);
   loadInsider(s.code);
   loadInstitutional(s.code);
+  loadValuation(s.code);
 
   // AI 評論：切股票時重置（不自動產生避免吃 token）
   document.getElementById("aiText").textContent = "點下方「✨ 產生評論」讓 AI 用即時指標 + 籌碼 + 訊號替你寫評估";
@@ -2018,13 +2032,12 @@ function updatePatterns(s) {
  * ======================================================================= */
 async function loadRanking(by = "change") {
   const tbody = document.querySelector("#rankTable tbody");
-  tbody.innerHTML = `<tr><td colspan="12" style="padding:30px; color:var(--muted);">📡 載入中（首次抓 13F 約 10-30 秒）...</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="13" style="padding:30px; color:var(--muted);">📡 載入中（首次抓 13F + 估值約 15-40 秒）...</td></tr>`;
   try {
-    const items = await apiGet(`/api/ranking?by=${by}`, 60000);
+    const items = await apiGet(`/api/ranking?by=${by}`, 90000);
     document.getElementById("rankCount").textContent = items.length + " 檔";
     tbody.innerHTML = items.map((r, i) => {
       const rankCls = i === 0 ? "gold" : i === 1 ? "silver" : i === 2 ? "bronze" : "normal";
-      const pctCls = r.change_pct >= 0 ? "up" : "down";
       const pctStr = (r.change_pct >= 0 ? "+" : "") + r.change_pct.toFixed(2) + "%";
       const fiStr = (r.fi_today >= 0 ? "+" : "") + r.fi_today.toLocaleString();
       const sigs = (r.signals || []).slice(0, 3).map(s =>
@@ -2032,6 +2045,17 @@ async function loadRanking(by = "change") {
       const inst = (r.inst_pct || 0).toFixed(1);
       const inst10 = (r.inst_top10 || 0).toFixed(1);
       const isInstSort = (by === "inst" || by === "inst10");
+      // 估值
+      const peg = r.peg;
+      const pegStr = peg != null ? peg.toFixed(2) : "—";
+      const pegColor = peg != null && peg > 0 && peg < 1 ? "var(--green)"
+                     : peg != null && peg > 0 && peg < 1.5 ? "var(--cyan)"
+                     : peg != null && peg >= 2.5 ? "var(--orange)" : "var(--muted)";
+      const relPe = r.pe_vs_group;
+      const relStr = relPe != null ? (relPe >= 0 ? "+" : "") + relPe.toFixed(0) + "%" : "—";
+      const relColor = relPe != null && relPe < -10 ? "var(--green)"
+                     : relPe != null && relPe > 20  ? "var(--orange)" : "var(--muted)";
+      const isValSort = (by === "peg" || by === "relpe");
       return `
         <tr data-code="${r.code}">
           <td><span class="rank-num ${rankCls}">${i+1}</span></td>
@@ -2045,9 +2069,13 @@ async function loadRanking(by = "change") {
           <td>${r.rsi.toFixed(1)}</td>
           <td><span style="font-size:11px;">${r.trend}</span></td>
           <td style="color:var(--purple); font-weight:${isInstSort?'700':'400'};">${inst}% <span style="font-size:10px; color:var(--muted);">(T10:${inst10}%)</span></td>
+          <td style="font-weight:${isValSort?'700':'400'};">
+            <div style="color:${pegColor};">PEG ${pegStr}</div>
+            <div style="font-size:10px; color:${relColor};">vs 族群 ${relStr}</div>
+          </td>
           <td style="text-align:left;">${sigs}</td>
         </tr>`;
-    }).join("") || `<tr><td colspan="12" style="padding:30px; color:var(--muted);">無資料</td></tr>`;
+    }).join("") || `<tr><td colspan="13" style="padding:30px; color:var(--muted);">無資料</td></tr>`;
     tbody.querySelectorAll("tr[data-code]").forEach(tr => {
       tr.addEventListener("click", () => {
         state.activeCode = tr.dataset.code;
@@ -2787,6 +2815,77 @@ async function loadInstitutional(code) {
     }).join("");
   } catch (e) {
     sumEl.innerHTML = `<div style="color:var(--red); font-size:12px;">載入失敗: ${e.message}</div>`;
+  }
+}
+
+/* =========================================================================
+ * Valuation panel (P/E, PEG, P/B + 族群相對位置)
+ * ======================================================================= */
+async function loadValuation(code) {
+  const gridEl = document.getElementById("valnGrid");
+  const noteEl = document.getElementById("valnNote");
+  gridEl.innerHTML = `<div style="color:var(--muted); font-size:12px; padding: 8px;">📡 載入中（首次 5-15 秒）...</div>`;
+  noteEl.textContent = "";
+  try {
+    const v = await apiGet(`/api/valuation/${code}`, 45000);
+    const fmt = (x) => x == null ? "—" : (typeof x === "number" ? x.toFixed(2) : x);
+    const pct = (x) => x == null ? "—" : (x >= 0 ? "+" : "") + x.toFixed(0) + "%";
+    const gs = v.group_stats || {};
+
+    const pegColor = v.peg != null && v.peg > 0 && v.peg < 1 ? "var(--green)"
+                   : v.peg != null && v.peg > 0 && v.peg < 1.5 ? "var(--cyan)"
+                   : v.peg != null && v.peg >= 2.5 ? "var(--orange)" : "var(--text)";
+    const peVsColor = v.pe_vs_group != null && v.pe_vs_group < -10 ? "var(--green)"
+                    : v.pe_vs_group != null && v.pe_vs_group >  20 ? "var(--orange)" : "var(--muted)";
+
+    gridEl.innerHTML = `
+      <div class="bt-metric" style="flex-basis: 140px;">
+        <div class="lbl">P/E (trailing)</div>
+        <div class="val" style="color:var(--cyan); font-size:22px;">${fmt(v.trailing_pe)}</div>
+        <div style="font-size:10px; color:${peVsColor};">族群中位 ${fmt(gs.pe_median)} · ${pct(v.pe_vs_group)}</div>
+      </div>
+      <div class="bt-metric" style="flex-basis: 130px; border-color:rgba(34,197,94,0.3);">
+        <div class="lbl">Forward P/E</div>
+        <div class="val" style="font-size:22px;">${fmt(v.forward_pe)}</div>
+        <div style="font-size:10px; color:var(--muted);">預估未來</div>
+      </div>
+      <div class="bt-metric" style="flex-basis: 130px; border-color:rgba(34,197,94,0.3);">
+        <div class="lbl">PEG</div>
+        <div class="val" style="color:${pegColor}; font-size:22px;">${fmt(v.peg)}</div>
+        <div style="font-size:10px; color:var(--muted);">族群中位 ${fmt(gs.peg_median)}</div>
+      </div>
+      <div class="bt-metric" style="flex-basis: 130px;">
+        <div class="lbl">P/B</div>
+        <div class="val" style="font-size:22px;">${fmt(v.price_book)}</div>
+        <div style="font-size:10px; color:var(--muted);">族群中位 ${fmt(gs.pb_median)}</div>
+      </div>
+      <div class="bt-metric" style="flex-basis: 110px;">
+        <div class="lbl">P/S</div>
+        <div class="val" style="font-size:22px;">${fmt(v.price_sales)}</div>
+      </div>
+      <div class="bt-metric" style="flex-basis: 110px;">
+        <div class="lbl">殖利率</div>
+        <div class="val" style="font-size:22px;">${v.div_yield != null ? v.div_yield.toFixed(2) + "%" : "—"}</div>
+      </div>
+      <div class="bt-metric" style="flex-basis: 110px;">
+        <div class="lbl">EPS 成長</div>
+        <div class="val" style="font-size:22px;">${v.earnings_growth != null ? (v.earnings_growth * 100).toFixed(0) + "%" : "—"}</div>
+        <div style="font-size:10px; color:var(--muted);">營收 ${v.revenue_growth != null ? (v.revenue_growth*100).toFixed(0) + "%" : "—"}</div>
+      </div>
+      <div class="bt-metric" style="flex-basis: 110px;">
+        <div class="lbl">ROE</div>
+        <div class="val" style="font-size:22px;">${v.roe != null ? (v.roe * 100).toFixed(0) + "%" : "—"}</div>
+        <div style="font-size:10px; color:var(--muted);">毛利 ${v.profit_margin != null ? (v.profit_margin * 100).toFixed(0) + "%" : "—"}</div>
+      </div>`;
+    // 判斷標籤
+    const tags = [];
+    if (v.peg != null && v.peg > 0 && v.peg < 1) tags.push(`<span style="color:var(--green); font-weight:700;">✅ PEG < 1：相對成長便宜</span>`);
+    if (v.pe_vs_group != null && v.pe_vs_group < -15) tags.push(`<span style="color:var(--green);">✅ P/E 比族群中位低 ${Math.abs(v.pe_vs_group).toFixed(0)}%</span>`);
+    if (v.peg != null && v.peg > 3) tags.push(`<span style="color:var(--orange);">⚠️ PEG 偏高 (>3)：成長已 priced in</span>`);
+    if (v.pe_vs_group != null && v.pe_vs_group > 30) tags.push(`<span style="color:var(--orange);">⚠️ P/E 比族群中位高 ${v.pe_vs_group.toFixed(0)}%</span>`);
+    noteEl.innerHTML = tags.join(" · ") || `<span style="color:var(--muted);">族群中位 ${v.group || "—"} (${gs.n_members || 0} 檔)，估值落在合理範圍</span>`;
+  } catch (e) {
+    gridEl.innerHTML = `<div style="color:var(--red); font-size:12px; padding: 8px;">載入失敗: ${e.message}</div>`;
   }
 }
 

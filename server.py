@@ -811,6 +811,119 @@ def fetch_institutional_holders(code: str) -> dict:
     return out
 
 
+# ----------------------------------------------------------------------------
+# 估值指標 (yfinance Ticker.info) + 同族群相對位置
+# ----------------------------------------------------------------------------
+def fetch_valuation(code: str) -> dict:
+    """單股估值 dict (cache 6 hr)。"""
+    cache_key = f"valn:{code}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    wl = load_watchlist()
+    info_meta = wl.get(code)
+    if not info_meta:
+        raise HTTPException(404)
+    try:
+        info = yf.Ticker(info_meta["yf"]).info or {}
+    except Exception as e:
+        print(f"[valn] {code}: {e}")
+        info = {}
+
+    def num(k):
+        v = info.get(k)
+        if v is None: return None
+        try:
+            v = float(v)
+            return v if not (v != v) else None  # filter NaN
+        except (TypeError, ValueError):
+            return None
+
+    out = {
+        "code":  code,
+        "name":  info_meta.get("name", code),
+        "group": info_meta.get("group", "自選"),
+        "trailing_pe":  num("trailingPE"),
+        "forward_pe":   num("forwardPE"),
+        "price_book":   num("priceToBook"),
+        "price_sales":  num("priceToSalesTrailing12Months"),
+        "peg":          num("trailingPegRatio") or num("pegRatio"),
+        "ev_ebitda":    num("enterpriseToEbitda"),
+        "div_yield":    num("dividendYield"),
+        "profit_margin": num("profitMargins"),
+        "roe":          num("returnOnEquity"),
+        "earnings_growth": num("earningsGrowth"),
+        "revenue_growth":  num("revenueGrowth"),
+        "beta":         num("beta"),
+        "market_cap":   num("marketCap"),
+    }
+    _cache[cache_key] = (time.time() + 6 * 3600 - CACHE_TTL, out)
+    return out
+
+
+def _percentile_rank(values: list[float], target: float) -> float | None:
+    """計算 target 在 values 中的百分位 (0-100)，target 是低值 → 百分位低。"""
+    vals = [v for v in values if v is not None and v > 0]
+    if not vals or target is None:
+        return None
+    below = sum(1 for v in vals if v < target)
+    return round(below / len(vals) * 100, 1)
+
+
+def fetch_valuation_ranking() -> list:
+    """所有 watchlist 股的估值 + 同族群相對位置。"""
+    cache_key = "valn-ranking"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    from concurrent.futures import ThreadPoolExecutor
+    codes = list(load_watchlist().keys())
+
+    def safe(c):
+        try: return fetch_valuation(c)
+        except: return None
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        items = [r for r in ex.map(safe, codes) if r]
+
+    # 各族群 PE / PEG / P/B 中位數
+    from statistics import median
+    by_group: dict[str, list[dict]] = {}
+    for it in items:
+        by_group.setdefault(it["group"], []).append(it)
+
+    group_stats: dict[str, dict] = {}
+    for g, members in by_group.items():
+        pes  = [m["trailing_pe"] for m in members if m["trailing_pe"] and m["trailing_pe"] > 0]
+        pegs = [m["peg"]          for m in members if m["peg"] and m["peg"] > 0]
+        pbs  = [m["price_book"]   for m in members if m["price_book"] and m["price_book"] > 0]
+        group_stats[g] = {
+            "pe_median":   round(median(pes), 2)  if pes  else None,
+            "peg_median":  round(median(pegs), 2) if pegs else None,
+            "pb_median":   round(median(pbs), 2)  if pbs  else None,
+            "n_members":   len(members),
+        }
+
+    # 計算每股相對位置（百分位 + 偏離 %）
+    for it in items:
+        g = it["group"]
+        g_pes  = [m["trailing_pe"] for m in by_group[g] if m["trailing_pe"]]
+        g_pegs = [m["peg"]          for m in by_group[g] if m["peg"]]
+        gs = group_stats[g]
+        it["pe_percentile"]  = _percentile_rank(g_pes,  it["trailing_pe"])
+        it["peg_percentile"] = _percentile_rank(g_pegs, it["peg"])
+        it["pe_vs_group"]    = (round((it["trailing_pe"] - gs["pe_median"]) / gs["pe_median"] * 100, 1)
+                                if gs.get("pe_median") and it.get("trailing_pe") else None)
+        it["peg_vs_group"]   = (round((it["peg"] - gs["peg_median"]) / gs["peg_median"] * 100, 1)
+                                if gs.get("peg_median") and it.get("peg") else None)
+        it["group_stats"]    = gs
+
+    cache_set(cache_key, items)
+    return items
+
+
 def insider_signals(code: str) -> list[dict]:
     """從近 90 日內部人交易產生訊號徽章。"""
     try:
@@ -1061,6 +1174,31 @@ def api_institutional(code: str):
     return fetch_institutional_holders(code)
 
 
+@app.get("/api/valuation/{code}")
+def api_valuation(code: str):
+    """單股估值指標 (P/E, PEG, P/B 等) 含同族群相對位置。"""
+    v = fetch_valuation(code)
+    # 補上族群相對位置 (從整個 ranking 拿)
+    try:
+        all_items = fetch_valuation_ranking()
+        match = next((x for x in all_items if x["code"] == code), None)
+        if match:
+            v["pe_percentile"]  = match.get("pe_percentile")
+            v["peg_percentile"] = match.get("peg_percentile")
+            v["pe_vs_group"]    = match.get("pe_vs_group")
+            v["peg_vs_group"]   = match.get("peg_vs_group")
+            v["group_stats"]    = match.get("group_stats", {})
+    except Exception:
+        pass
+    return v
+
+
+@app.get("/api/valuation")
+def api_valuation_all():
+    """全 watchlist 估值排行 + 各族群中位數。"""
+    return fetch_valuation_ranking()
+
+
 @app.get("/api/groups")
 def api_groups():
     """族群清單 + 每族群成員代號。"""
@@ -1107,6 +1245,14 @@ def api_ranking(by: str = "change"):
                 inst_top10 = ih["summary"].get("top10_pct", 0)
             except Exception:
                 pass
+            # 估值指標 (cache 6 hr)
+            peg = pe = pe_vs_group = None
+            try:
+                v = fetch_valuation(code)
+                peg = v.get("peg")
+                pe  = v.get("trailing_pe")
+            except Exception:
+                pass
             items.append({
                 "code":       code,
                 "name":       d["name"],
@@ -1129,9 +1275,28 @@ def api_ranking(by: str = "change"):
                 "risk":       d["risk"],
                 "inst_pct":    inst_pct,
                 "inst_top10":  inst_top10,
+                "pe":          pe,
+                "peg":         peg,
             })
         except Exception:
             pass
+    # 計算族群相對 PE (在 ranking 端點即時算，因 valuation_ranking 也有 cache)
+    try:
+        valn_items = fetch_valuation_ranking()
+        rel_map = {v["code"]: v.get("pe_vs_group") for v in valn_items}
+        for it in items:
+            it["pe_vs_group"] = rel_map.get(it["code"])
+    except Exception:
+        for it in items:
+            it.setdefault("pe_vs_group", None)
+
+    def _peg_key(x):
+        v = x.get("peg")
+        return v if (v is not None and v > 0) else 9999
+    def _relpe_key(x):
+        v = x.get("pe_vs_group")
+        return v if v is not None else 9999
+
     keymap = {
         "change":   lambda x: -x["change_pct"],
         "down":     lambda x:  x["change_pct"],
@@ -1143,8 +1308,10 @@ def api_ranking(by: str = "change"):
         "win":      lambda x: -x["win_rate"],
         "signals":  lambda x: -x["signal_count"],
         "bias":     lambda x: -abs(x["bias"]),
-        "inst":     lambda x: -x["inst_pct"],       # 機構持股比例
-        "inst10":   lambda x: -x["inst_top10"],     # Top 10 集中度
+        "inst":     lambda x: -x["inst_pct"],
+        "inst10":   lambda x: -x["inst_top10"],
+        "peg":      _peg_key,            # PEG 最低（< 1 = 相對便宜）
+        "relpe":    _relpe_key,          # 相對族群 P/E 最低（同族群最便宜）
     }
     items.sort(key=keymap.get(by, keymap["change"]))
     return items
