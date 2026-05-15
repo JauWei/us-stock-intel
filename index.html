@@ -1048,6 +1048,27 @@
     </div>
   </div>
 
+  <!-- ===== Radar (個股 6 軸雷達) ===== -->
+  <div class="hero" style="grid-template-columns: 1fr 2fr; margin-bottom:16px;">
+    <div class="panel" style="margin-bottom:0;">
+      <div class="panel-title">
+        <span class="dot" style="background:var(--cyan);"></span>
+        🕸️ 6 軸雷達
+        <span class="small">技術 / 籌碼 / 估值 / 勝率 / 訊號 / 風險倒數</span>
+      </div>
+      <div id="radarChart" style="height: 280px;"></div>
+    </div>
+    <div class="panel" style="margin-bottom:0;">
+      <div class="panel-title">
+        <span class="dot" style="background:var(--gold);"></span>
+        📊 個性化解讀
+      </div>
+      <div id="radarReason" style="font-size: 13px; line-height: 1.7;">
+        <span style="color:var(--muted);">點任一檔股票看雷達分析...</span>
+      </div>
+    </div>
+  </div>
+
   <!-- ===== Insider + Institutional (13F) ===== -->
   <div class="hero" style="grid-template-columns: 1fr 1fr; margin-bottom:16px;">
     <div class="panel" style="margin-bottom:0;">
@@ -1105,6 +1126,9 @@
         <div class="opt active" data-by="score">🎯 綜合評分</div>
         <div class="opt" data-by="change">漲幅</div>
         <div class="opt" data-by="down">跌幅</div>
+        <div class="opt" data-by="rs1d">📊 RS 1d</div>
+        <div class="opt" data-by="rs5d">📊 RS 5d</div>
+        <div class="opt" data-by="rs20d">📊 RS 20d</div>
         <div class="opt" data-by="volume">成交量</div>
         <div class="opt" data-by="win">短線勝率</div>
         <div class="opt" data-by="signals">訊號多</div>
@@ -1112,11 +1136,17 @@
         <div class="opt" data-by="fi">Strong Buy</div>
         <div class="opt" data-by="rsi">RSI 高</div>
         <div class="opt" data-by="rsi_low">RSI 低</div>
-        <div class="opt" data-by="inst">🐋 機構持股 %</div>
-        <div class="opt" data-by="inst10">🐋 Top10 集中度</div>
-        <div class="opt" data-by="peg">💰 PEG 最低</div>
-        <div class="opt" data-by="relpe">💰 同族群最便宜</div>
+        <div class="opt" data-by="inst">🐋 機構 %</div>
+        <div class="opt" data-by="peg">💰 PEG</div>
+        <div class="opt" data-by="relpe">💰 相對 PE</div>
       </div>
+      <label style="font-size:12px; color:var(--muted); margin-left:8px;">權重</label>
+      <select id="rankWeights" style="padding:5px 10px; background:var(--bg-2); color:var(--text); border:1px solid var(--line); border-radius:8px; font-size:12px;">
+        <option value="balanced">均衡 (Balanced)</option>
+        <option value="value">💎 價值派</option>
+        <option value="momentum">🚀 動能派</option>
+        <option value="chip">🐋 籌碼派</option>
+      </select>
       <span class="spacer"></span>
       <span style="font-size:12px; color:var(--muted);" id="rankCount">—</span>
     </div>
@@ -1392,23 +1422,48 @@
 
 <!-- ===== Modal: Alert ===== -->
 <div class="modal-mask" id="alertModal">
-  <div class="modal">
-    <h3>🔔 <span id="alertStockName">—</span> 價格警示</h3>
+  <div class="modal" style="width: min(520px, 95%);">
+    <h3>🔔 <span id="alertStockName">—</span> 警示設定</h3>
 
-    <div style="font-size:13px; color:var(--muted); margin-bottom:6px;">
-      設定上方/下方觸發價，<strong style="color:var(--cyan);">突破或跌破時 Telegram 推播</strong>。需先設定 Telegram。
+    <div style="font-size:13px; color:var(--muted); margin-bottom:8px;">
+      所有觸發條件都會 <strong style="color:var(--cyan);">Telegram 推播</strong>。背景每 5 分鐘掃描。
     </div>
 
-    <label>📈 上方警示（突破時通知）</label>
-    <input type="number" id="alertAbove" step="0.01" placeholder="例如 1100">
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 8px 14px;">
+      <div>
+        <label>📈 價格突破上方</label>
+        <input type="number" id="alertAbove" step="0.01" placeholder="例 300">
+      </div>
+      <div>
+        <label>📉 價格跌破下方</label>
+        <input type="number" id="alertBelow" step="0.01" placeholder="例 280">
+      </div>
+      <div>
+        <label>🔥 RSI 突破 (過熱)</label>
+        <input type="number" id="alertRsiAbove" step="1" min="50" max="95" placeholder="例 75">
+      </div>
+      <div>
+        <label>❄️ RSI 跌破 (超賣)</label>
+        <input type="number" id="alertRsiBelow" step="1" min="5" max="50" placeholder="例 30">
+      </div>
+    </div>
 
-    <label>📉 下方警示（跌破時通知）</label>
-    <input type="number" id="alertBelow" step="0.01" placeholder="例如 1050">
+    <label style="margin-top:14px;">📡 訊號事件推播</label>
+    <div style="display:flex; flex-wrap:wrap; gap: 6px 10px; font-size:12px;">
+      <label style="display:flex; gap:4px;"><input type="checkbox" id="alertGolden">🌟 黃金交叉</label>
+      <label style="display:flex; gap:4px;"><input type="checkbox" id="alertDeath">💀 死亡交叉</label>
+      <label style="display:flex; gap:4px;"><input type="checkbox" id="alertKdUp">🔼 KD 黃金交叉</label>
+      <label style="display:flex; gap:4px;"><input type="checkbox" id="alertBreakout">🚀 突破 20 日新高</label>
+      <label style="display:flex; gap:4px;"><input type="checkbox" id="alertBreakdown">📉 跌破 20 日新低</label>
+    </div>
+
+    <label>🎯 訊號爆發（同時 N 個以上）</label>
+    <input type="number" id="alertSignalBurst" step="1" min="2" max="6" placeholder="例 3 (留空 = 不啟用)">
 
     <div id="alertHint" class="hint" style="margin-top:8px;"></div>
 
     <div class="actions">
-      <button class="btn danger" id="btnAlertClear">清除警示</button>
+      <button class="btn danger" id="btnAlertClear">清除全部</button>
       <span style="flex:1;"></span>
       <button class="btn" data-close="alertModal">取消</button>
       <button class="btn primary" id="btnAlertSave">儲存</button>
@@ -1868,6 +1923,7 @@ async function loadStock(code) {
   loadInsider(s.code);
   loadInstitutional(s.code);
   loadValuation(s.code);
+  renderRadar(s);
 
   // AI 評論：切股票時重置（不自動產生避免吃 token）
   document.getElementById("aiText").textContent = "點下方「✨ 產生評論」讓 AI 用即時指標 + 籌碼 + 訊號替你寫評估";
@@ -2015,12 +2071,19 @@ async function loadNews(code) {
       const tStr = t ? `${t.getMonth()+1}/${t.getDate()} ${String(t.getHours()).padStart(2,"0")}:${String(t.getMinutes()).padStart(2,"0")}` : "";
       const link = n.link || "#";
       const origAttr = n.title_orig && n.title_orig !== n.title ? ` title="原文：${n.title_orig.replace(/"/g, '&quot;')}"` : "";
+      const sent = n.sentiment || "neutral";
+      const sIcon  = sent === "positive" ? "✅" : sent === "negative" ? "⚠️" : "○";
+      const sColor = sent === "positive" ? "var(--green)" : sent === "negative" ? "var(--red)" : "var(--muted)";
+      const sLabel = sent === "positive" ? "正面" : sent === "negative" ? "負面" : "中性";
       return `
         <div class="news-item">
-          <div class="icon">📰</div>
+          <div class="icon" style="background:${sColor}; color:#fff;" title="情感：${sLabel}">${sIcon}</div>
           <div class="body">
             <a href="${link}" target="_blank" rel="noopener"${origAttr}>${n.title || "(無標題)"}</a>
-            <div class="meta">${n.publisher || "—"}${tStr ? " · " + tStr : ""}</div>
+            <div class="meta">
+              <span style="color:${sColor};">${sLabel}</span> ·
+              ${n.publisher || "—"}${tStr ? " · " + tStr : ""}
+            </div>
           </div>
         </div>`;
     }).join("");
@@ -2061,11 +2124,12 @@ function updatePatterns(s) {
 /* =========================================================================
  * Ranking
  * ======================================================================= */
-async function loadRanking(by = "change") {
+async function loadRanking(by = "score") {
   const tbody = document.querySelector("#rankTable tbody");
   tbody.innerHTML = `<tr><td colspan="14" style="padding:30px; color:var(--muted);">📡 載入中（首次抓 13F + 估值約 15-40 秒）...</td></tr>`;
   try {
-    const items = await apiGet(`/api/ranking?by=${by}`, 90000);
+    const w = document.getElementById("rankWeights")?.value || "balanced";
+    const items = await apiGet(`/api/ranking?by=${by}&weights=${w}`, 90000);
     document.getElementById("rankCount").textContent = items.length + " 檔";
     tbody.innerHTML = items.map((r, i) => {
       const rankCls = i === 0 ? "gold" : i === 1 ? "silver" : i === 2 ? "bronze" : "normal";
@@ -2102,7 +2166,10 @@ async function loadRanking(by = "change") {
           <td title="${tip.replace(/"/g, '&quot;')}" style="font-weight:${isScoreSort?'800':'700'}; font-size:${isScoreSort?'18px':'15px'}; color:${scoreColor};">${score >= 0 ? "+" : ""}${score}</td>
           <td><strong style="color:var(--yellow);">${r.code}</strong></td>
           <td>${r.name}</td>
-          <td><span style="font-size:11px; color:var(--muted);">${r.group || '—'}</span></td>
+          <td>
+            <div style="font-size:11px; color:var(--muted);">${r.group || '—'}</div>
+            ${r.rs_5d != null ? `<div style="font-size:10px; color:${r.rs_5d>=0?'var(--red)':'var(--green)'};">RS5d ${r.rs_5d>=0?'+':''}${r.rs_5d}%</div>` : ''}
+          </td>
           <td>${r.price.toFixed(2)}</td>
           <td class="pct-cell" style="color:${r.change_pct>=0?'var(--red)':'var(--green)'}">${pctStr}</td>
           <td>${r.volume.toLocaleString()}</td>
@@ -2151,6 +2218,11 @@ function bindToolbar() {
       document.querySelectorAll("#rankSeg .opt").forEach(x => x.classList.toggle("active", x === o));
       loadRanking(o.dataset.by);
     });
+  });
+  // 權重 prefab 切換 → 重新載入當前排序
+  document.getElementById("rankWeights")?.addEventListener("change", () => {
+    const active = document.querySelector("#rankSeg .opt.active");
+    loadRanking(active?.dataset?.by || "score");
   });
   // Buttons
   document.getElementById("btnAdd").addEventListener("click", () => openModal("addModal"));
@@ -2308,21 +2380,49 @@ async function saveTelegram() {
 }
 
 /* ----- Alert ----- */
+const _ALERT_FIELDS = [
+  ["alertAbove",       "above",           "num"],
+  ["alertBelow",       "below",           "num"],
+  ["alertRsiAbove",    "rsi_above",       "num"],
+  ["alertRsiBelow",    "rsi_below",       "num"],
+  ["alertGolden",      "on_golden_cross", "bool"],
+  ["alertDeath",       "on_death_cross",  "bool"],
+  ["alertKdUp",        "on_kd_cross_up",  "bool"],
+  ["alertBreakout",    "on_breakout",     "bool"],
+  ["alertBreakdown",   "on_breakdown",    "bool"],
+  ["alertSignalBurst", "on_signal_burst", "num"],
+];
+
 async function openAlertModal() {
   if (!state.activeCode) return;
   const s = state.list.find(x => x.code === state.activeCode);
   document.getElementById("alertStockName").textContent = `${s?.name || ""} (${state.activeCode})`;
-  document.getElementById("alertAbove").value = "";
-  document.getElementById("alertBelow").value = "";
+  // 清空所有欄位
+  _ALERT_FIELDS.forEach(([id, _k, typ]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (typ === "bool") el.checked = false;
+    else                el.value = "";
+  });
   document.getElementById("alertHint").textContent = "";
   try {
     const all = await apiGet("/api/alerts");
     const cur = all[state.activeCode];
     if (cur) {
-      if (cur.above != null) document.getElementById("alertAbove").value = cur.above;
-      if (cur.below != null) document.getElementById("alertBelow").value = cur.below;
-      document.getElementById("alertHint").innerHTML =
-        `現有警示：上 <strong>${cur.above ?? "—"}</strong> / 下 <strong>${cur.below ?? "—"}</strong>`;
+      _ALERT_FIELDS.forEach(([id, key, typ]) => {
+        const el = document.getElementById(id);
+        if (!el || cur[key] == null) return;
+        if (typ === "bool") el.checked = !!cur[key];
+        else                el.value   = cur[key];
+      });
+      const summary = [];
+      if (cur.above != null) summary.push(`上 ${cur.above}`);
+      if (cur.below != null) summary.push(`下 ${cur.below}`);
+      if (cur.rsi_above != null) summary.push(`RSI≥${cur.rsi_above}`);
+      if (cur.rsi_below != null) summary.push(`RSI≤${cur.rsi_below}`);
+      if (cur.on_golden_cross) summary.push("黃金交叉");
+      if (cur.on_signal_burst) summary.push(`訊號≥${cur.on_signal_burst}`);
+      document.getElementById("alertHint").innerHTML = `現有警示：${summary.join(" · ") || "無"}`;
     }
     const tg = await apiGet("/api/telegram");
     if (!tg.configured) {
@@ -2332,14 +2432,27 @@ async function openAlertModal() {
   } catch {}
   openModal("alertModal");
 }
+
 async function saveAlert() {
   if (!state.activeCode) return;
-  const above = parseFloat(document.getElementById("alertAbove").value) || null;
-  const below = parseFloat(document.getElementById("alertBelow").value) || null;
-  if (!above && !below) { alert("至少設一個價位"); return; }
+  const payload = {};
+  let hasAny = false;
+  _ALERT_FIELDS.forEach(([id, key, typ]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (typ === "bool") {
+      payload[key] = el.checked ? true : null;
+      if (el.checked) hasAny = true;
+    } else {
+      const v = parseFloat(el.value);
+      payload[key] = isNaN(v) ? null : v;
+      if (!isNaN(v)) hasAny = true;
+    }
+  });
+  if (!hasAny) { alert("至少設一個警示條件"); return; }
   try {
-    await apiSend(`/api/alerts/${state.activeCode}`, "POST", { above, below });
-    alert("✅ 警示已儲存。背景每 5 分鐘檢查，突破 / 跌破時 Telegram 推播。");
+    await apiSend(`/api/alerts/${state.activeCode}`, "POST", payload);
+    alert("✅ 警示已儲存。背景每 5 分鐘檢查，觸發時 Telegram 推播。");
     closeModal("alertModal");
   } catch (e) { alert("失敗: " + e.message); }
 }
@@ -2357,13 +2470,28 @@ async function clearAlert() {
  * ======================================================================= */
 async function loadHeatmap() {
   const grid = document.getElementById("heatmapGrid");
-  grid.innerHTML = `<div style="grid-column:1/-1; color:var(--muted); padding:30px; text-align:center;">📡 載入族群資料...</div>`;
+  grid.innerHTML = `<div style="grid-column:1/-1; color:var(--muted); padding:30px; text-align:center;">📡 載入族群資料 + 輪動分析...</div>`;
   try {
-    const groups = await apiGet("/api/group-heatmap", 30000);
+    const [groups, rotation] = await Promise.all([
+      apiGet("/api/group-heatmap", 60000),
+      apiGet("/api/group-rotation", 60000).catch(() => []),
+    ]);
+    const rotMap = {};
+    for (const r of rotation) rotMap[r.group] = r;
+
     grid.innerHTML = groups.map(g => {
       const color = g.avg_change >= 0 ? "var(--red)" : "var(--green)";
       const winPct = g.count ? (g.wins / g.count * 100) : 0;
       const losePct = 100 - winPct;
+      const rot = rotMap[g.group] || {};
+      // 動量箭頭
+      const mo = rot.momentum;
+      const moStr = mo == null ? "" :
+        (mo >= 2  ? `<span style="color:var(--red);">🔥 加速 +${mo.toFixed(1)}%</span>` :
+         mo >= 0.5 ? `<span style="color:var(--orange);">▲ 升溫 +${mo.toFixed(1)}%</span>` :
+         mo <= -2 ? `<span style="color:var(--green);">❄️ 降溫 ${mo.toFixed(1)}%</span>` :
+         mo <= -0.5 ? `<span style="color:var(--cyan);">▼ 趨弱 ${mo.toFixed(1)}%</span>` :
+         `<span style="color:var(--muted);">─ 持平</span>`);
       return `
         <div class="heat-card">
           <div class="heat-head">
@@ -2377,7 +2505,11 @@ async function loadHeatmap() {
             <div class="red" style="width:${winPct}%"></div>
             <div class="green" style="width:${losePct}%"></div>
           </div>
-          <div class="heat-meta">最強 <span style="color:var(--red)">+${g.max_up}%</span> · 最弱 <span style="color:var(--green)">${g.max_down}%</span></div>
+          <div class="heat-meta" style="margin-bottom:6px;">
+            ${moStr ? `<div>動量: ${moStr}</div>` : ''}
+            ${rot.ret_1w != null ? `<div>近 1W: <span style="color:${rot.ret_1w>=0?'var(--red)':'var(--green)'};">${rot.ret_1w>=0?'+':''}${rot.ret_1w}%</span> · 1M: <span style="color:${rot.ret_1m>=0?'var(--red)':'var(--green)'};">${rot.ret_1m>=0?'+':''}${rot.ret_1m}%</span></div>` : ''}
+            <div>最強 <span style="color:var(--red)">+${g.max_up}%</span> · 最弱 <span style="color:var(--green)">${g.max_down}%</span></div>
+          </div>
           <div class="heat-members">
             ${g.members.slice(0, 8).map(m => `
               <div class="heat-member" data-code="${m.code}">
@@ -2931,6 +3063,115 @@ async function loadValuation(code) {
 }
 
 /* =========================================================================
+ * Radar chart (6 軸)
+ * ======================================================================= */
+let radarChart;
+function _clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+async function renderRadar(s) {
+  // 6 軸 0-100 分:
+  // 1. 技術 (趨勢 + RSI 健康) — 多頭+RSI 50-70 滿分
+  // 2. 籌碼 (機構持股) — 80%+ 滿分
+  // 3. 估值 (PEG 倒數) — PEG <= 0.5 滿分、>= 3 零分
+  // 4. 勝率 — 直接用 win_rate
+  // 5. 訊號 (淨多頭) — 多頭訊號數 - 空頭訊號數 normalized
+  // 6. 風險倒數 — 低 RSI 過熱 + 低乖離 = 高分
+  let inst_pct = 0, peg = null;
+  try {
+    const v = await apiGet(`/api/valuation/${s.code}`, 15000);
+    peg = v.peg;
+    const ih = await apiGet(`/api/institutional/${s.code}`, 15000);
+    inst_pct = (ih.summary || {}).pct_institutions || 0;
+  } catch {}
+
+  // 1. 技術
+  const isBull = (s.maStatus || "").includes("多頭");
+  const isBear = (s.maStatus || "").includes("空頭");
+  const rsi = s.rsi || 50;
+  const techScore = _clamp(
+    (isBull ? 60 : isBear ? 20 : 40)
+    + (rsi >= 50 && rsi <= 70 ? 30 : rsi > 70 ? 15 : 10),
+    0, 100
+  );
+  // 2. 籌碼
+  const chipScore = _clamp(inst_pct * 1.1, 0, 100);
+  // 3. 估值
+  const valScore = peg == null || peg <= 0 ? 30 :
+                   peg <= 0.5 ? 100 :
+                   peg <= 1   ? 85 :
+                   peg <= 1.5 ? 65 :
+                   peg <= 2   ? 45 :
+                   peg <= 3   ? 25 : 10;
+  // 4. 勝率
+  const winScore = _clamp(s.winRate ? s.winRate : 50, 0, 100);
+  // 5. 訊號
+  const sigs = s.signals || [];
+  const bull = sigs.filter(x => x.color === "red").length;
+  const bear = sigs.filter(x => x.color === "green").length;
+  const overheat = sigs.filter(x => x.color === "orange").length;
+  const sigScore = _clamp(50 + bull * 18 - bear * 18 - overheat * 8, 0, 100);
+  // 6. 風險倒數
+  const bias = Math.abs((s.price - s.ma20) / s.ma20 * 100);
+  const riskInv = _clamp(100 - (rsi > 75 ? 30 : 0) - (bias > 15 ? 25 : bias > 10 ? 12 : 0)
+                            - (overheat * 8) - (isBear ? 15 : 0), 0, 100);
+
+  const opt = {
+    backgroundColor: "transparent",
+    radar: {
+      indicator: [
+        { name: "技術",      max: 100 },
+        { name: "籌碼",      max: 100 },
+        { name: "估值",      max: 100 },
+        { name: "勝率",      max: 100 },
+        { name: "訊號",      max: 100 },
+        { name: "風險倒數",  max: 100 },
+      ],
+      shape: "polygon",
+      axisName: { color: "#e7ecf7", fontSize: 11 },
+      splitArea: { areaStyle: { color: ["rgba(34,211,238,0.04)", "rgba(34,211,238,0.08)"] } },
+      splitLine: { lineStyle: { color: "#1f2a44" } },
+      axisLine: { lineStyle: { color: "#1f2a44" } },
+    },
+    series: [{
+      type: "radar",
+      data: [{
+        value: [techScore, chipScore, valScore, winScore, sigScore, riskInv],
+        name: s.name,
+        symbol: "circle",
+        symbolSize: 5,
+        itemStyle: { color: "#22d3ee" },
+        lineStyle: { color: "#22d3ee", width: 2 },
+        areaStyle: { color: "rgba(34,211,238,0.25)" },
+      }],
+    }],
+  };
+  if (!radarChart) radarChart = echarts.init(document.getElementById("radarChart"));
+  radarChart.setOption(opt, true);
+
+  // 解讀文字
+  const scores = { 技術: techScore, 籌碼: chipScore, 估值: valScore, 勝率: winScore, 訊號: sigScore, 風險倒數: riskInv };
+  const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  const strongest = sorted.slice(0, 2);
+  const weakest = sorted.slice(-2).reverse();
+  const totalAvg = Object.values(scores).reduce((a, b) => a + b, 0) / 6;
+  const totalColor = totalAvg >= 65 ? "var(--red)" : totalAvg >= 45 ? "var(--cyan)" : "var(--green)";
+  document.getElementById("radarReason").innerHTML = `
+    <div style="font-size:18px; font-weight:700; margin-bottom:8px;">綜合分數 <span style="color:${totalColor};">${totalAvg.toFixed(0)} / 100</span></div>
+    <div style="margin-bottom:6px;">
+      <strong style="color:var(--red);">💪 強項：</strong>
+      ${strongest.map(([k, v]) => `${k} <span style="color:var(--red);">${v.toFixed(0)}</span>`).join(" · ")}
+    </div>
+    <div style="margin-bottom:10px;">
+      <strong style="color:var(--green);">⚠️ 弱項：</strong>
+      ${weakest.map(([k, v]) => `${k} <span style="color:var(--green);">${v.toFixed(0)}</span>`).join(" · ")}
+    </div>
+    <div style="font-size:11px; color:var(--muted); line-height:1.6; border-top:1px dashed var(--line); padding-top:8px;">
+      技術: 趨勢+RSI · 籌碼: 機構持股 % · 估值: PEG · 勝率: 短線啟發式<br>
+      訊號: 淨多頭訊號 · 風險倒數: 過熱程度反向（越高越安全）
+    </div>`;
+}
+
+/* =========================================================================
  * Backtest
  * ======================================================================= */
 let btChart;
@@ -3043,6 +3284,7 @@ window.addEventListener("DOMContentLoaded", boot);
 window.addEventListener("resize", () => {
   klineChart && klineChart.resize();
   btChart && btChart.resize();
+  radarChart && radarChart.resize();
   institChart && institChart.resize();
   revChart && revChart.resize();
   epsChart && epsChart.resize();

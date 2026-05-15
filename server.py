@@ -528,7 +528,7 @@ def fetch_stock(code: str, period: str = "D", force: bool = False) -> dict:
     # 順便檢查警示
     if period == "D":
         try:
-            check_alert(code, price, prev_close, info["name"])
+            check_alert(code, price, prev_close, info["name"], rsi=rsi_v, signals=signals)
         except Exception as e:
             print(f"[alert check] {code}: {e}")
 
@@ -671,6 +671,29 @@ def _translate_titles_zh(titles: list[str]) -> list[str]:
     return titles
 
 
+def _gemini_sentiment_batch(titles: list[str], key: str) -> list[str]:
+    """批次情感分析。回傳 list of 'positive'/'negative'/'neutral'。失敗回 ['neutral'] * N"""
+    if not titles:
+        return []
+    try:
+        prompt = (
+            "判斷以下新聞標題對該股票的情感影響，每行回 positive / negative / neutral 之一，"
+            "不要加編號或解釋，順序對齊：\n\n" + "\n".join(titles)
+        )
+        text = _gemini_call(key, prompt)
+        lines = [l.strip().lower() for l in text.split("\n") if l.strip()]
+        out = []
+        for i in range(len(titles)):
+            l = lines[i] if i < len(lines) else ""
+            if "pos" in l: out.append("positive")
+            elif "neg" in l: out.append("negative")
+            else: out.append("neutral")
+        return out
+    except Exception as e:
+        print(f"[sentiment] {e}")
+        return ["neutral"] * len(titles)
+
+
 def fetch_news(code: str) -> list:
     cached = cache_get(f"news:{code}")
     if cached:
@@ -688,6 +711,10 @@ def fetch_news(code: str) -> list:
     orig_titles = [n["title"] for n in raw]
     zh_titles   = _translate_titles_zh(orig_titles)
 
+    # 批次情感分析（若有 Gemini key）— 用中文標題分析
+    key = _get_gemini_key()
+    sentiments = _gemini_sentiment_batch(zh_titles, key) if key else ["neutral"] * len(raw)
+
     out = []
     for i, n in enumerate(raw):
         out.append({
@@ -696,6 +723,7 @@ def fetch_news(code: str) -> list:
             "publisher":  n["publisher"],
             "link":       n["link"],
             "time":       n["time"],
+            "sentiment":  sentiments[i] if i < len(sentiments) else "neutral",
         })
     cache_set(f"news:{code}", out)
     return out
@@ -1045,20 +1073,64 @@ def send_telegram(text: str) -> bool:
         return False
 
 
-def check_alert(code: str, price: float, prev: float, name: str = "") -> None:
+def check_alert(code: str, price: float, prev: float, name: str = "",
+                rsi: float = None, signals: list = None) -> None:
+    """檢查警示規則：
+    - above / below: 價格突破/跌破
+    - rsi_above / rsi_below: RSI 越過閾值
+    - on_golden_cross / on_death_cross: 黃金/死亡交叉
+    - on_signal_burst: 訊號總數 >= N
+    """
     alerts = load_alerts()
     rule = alerts.get(code)
     if not rule:
         return
+    last_price   = rule.get("last_price", prev)
+    last_rsi     = rule.get("last_rsi", rsi if rsi is not None else 50)
+    last_sig_keys = set(rule.get("last_sig_keys", []))
+    sig_keys = set(s.get("key", "") for s in (signals or []))
+    triggered = []
+
+    # 1. 價格突破/跌破
     above = rule.get("above")
     below = rule.get("below")
-    last_price = rule.get("last_price", prev)
-    triggered = []
     if above is not None and float(last_price) < float(above) <= price:
         triggered.append(f"🚀 *{name} ({code})* 突破上方警示\n價位: *{above}* → 現價 *{price:.2f}*")
     if below is not None and float(last_price) > float(below) >= price:
         triggered.append(f"⚠️ *{name} ({code})* 跌破下方警示\n價位: *{below}* → 現價 *{price:.2f}*")
-    rule["last_price"] = price
+
+    # 2. RSI 越過閾值
+    if rsi is not None:
+        r_above = rule.get("rsi_above")
+        r_below = rule.get("rsi_below")
+        if r_above is not None and float(last_rsi) < float(r_above) <= rsi:
+            triggered.append(f"🔥 *{name} ({code})* RSI 突破 *{r_above}* → 目前 *{rsi:.1f}* (過熱警示)")
+        if r_below is not None and float(last_rsi) > float(r_below) >= rsi:
+            triggered.append(f"❄️ *{name} ({code})* RSI 跌破 *{r_below}* → 目前 *{rsi:.1f}* (超賣反彈機會)")
+
+    # 3. 訊號事件 (今天才出現、昨天沒有)
+    new_signals = sig_keys - last_sig_keys
+    if rule.get("on_golden_cross") and "golden_cross" in new_signals:
+        triggered.append(f"🌟 *{name} ({code})* 出現 *黃金交叉* (MA5 上穿 MA20)")
+    if rule.get("on_death_cross") and "death_cross" in new_signals:
+        triggered.append(f"💀 *{name} ({code})* 出現 *死亡交叉* (MA5 下穿 MA20)")
+    if rule.get("on_kd_cross_up") and "kd_cross_up" in new_signals:
+        triggered.append(f"🔼 *{name} ({code})* 出現 *KD 黃金交叉*")
+    if rule.get("on_breakout") and "breakout_high" in new_signals:
+        triggered.append(f"🚀 *{name} ({code})* 突破 *20 日新高*")
+    if rule.get("on_breakdown") and "breakdown_low" in new_signals:
+        triggered.append(f"📉 *{name} ({code})* 跌破 *20 日新低*")
+
+    # 4. 訊號爆發 (訊號數量越過閾值)
+    burst_n = rule.get("on_signal_burst")
+    if burst_n is not None and len(sig_keys) >= int(burst_n) and len(last_sig_keys) < int(burst_n):
+        labels = "、".join(s.get("label", "") for s in (signals or [])[:5])
+        triggered.append(f"🎯 *{name} ({code})* 訊號爆發！{len(sig_keys)} 個訊號:\n{labels}")
+
+    # 更新狀態
+    rule["last_price"]   = price
+    rule["last_rsi"]     = rsi if rsi is not None else last_rsi
+    rule["last_sig_keys"] = list(sig_keys)
     alerts[code] = rule
     save_json(ALERTS_FILE, alerts)
     for msg in triggered:
@@ -1261,8 +1333,56 @@ def api_groups():
     return groups
 
 
+# 4 套權重 prefab — 由 ?weights= 切換
+SCORE_WEIGHT_PRESETS = {
+    "balanced": {
+        # 估值
+        "peg_strong": 25, "peg_weak": 12, "relpe_strong": 20, "relpe_weak": 10,
+        # 籌碼
+        "inst_high": 15, "inst_mid": 8,
+        # 動能
+        "win_high": 15, "win_mid": 8, "bull_multi": 10, "bull_one": 5,
+        "rs5_strong": 8, "rs5_weak": -8,
+        # 風險
+        "bear_each": -8, "overheat_each": -5,
+        "rsi_overbought": -12, "rsi_oversold": 8,
+        "trend_bull": 5, "trend_bear": -5,
+    },
+    "value": {  # 價值派 — 加重估值、輕看動能
+        "peg_strong": 40, "peg_weak": 22, "relpe_strong": 35, "relpe_weak": 18,
+        "inst_high": 18, "inst_mid": 10,
+        "win_high": 8,  "win_mid": 4,  "bull_multi": 5, "bull_one": 2,
+        "rs5_strong": 4, "rs5_weak": -4,
+        "bear_each": -5, "overheat_each": -3,
+        "rsi_overbought": -8, "rsi_oversold": 15,    # 反轉機會加重
+        "trend_bull": 3, "trend_bear": -3,
+    },
+    "momentum": {  # 動能派 — 加重訊號/RS/勝率
+        "peg_strong": 10, "peg_weak": 5, "relpe_strong": 8, "relpe_weak": 4,
+        "inst_high": 8,  "inst_mid": 4,
+        "win_high": 30, "win_mid": 15, "bull_multi": 25, "bull_one": 12,
+        "rs5_strong": 20, "rs5_weak": -15,
+        "bear_each": -12, "overheat_each": -3,        # 動能派可忍過熱
+        "rsi_overbought": -5, "rsi_oversold": 5,
+        "trend_bull": 12, "trend_bear": -12,
+    },
+    "chip": {  # 籌碼派 — 加重機構/內部人
+        "peg_strong": 15, "peg_weak": 8, "relpe_strong": 12, "relpe_weak": 6,
+        "inst_high": 35, "inst_mid": 18,
+        "win_high": 12, "win_mid": 6, "bull_multi": 15, "bull_one": 7,
+        "rs5_strong": 10, "rs5_weak": -8,
+        "bear_each": -15, "overheat_each": -5,        # 機構不喜歡風險
+        "rsi_overbought": -10, "rsi_oversold": 8,
+        "trend_bull": 5, "trend_bear": -8,
+    },
+}
+_SCORE_WEIGHTS = SCORE_WEIGHT_PRESETS["balanced"]  # 全域，由 api_ranking 設定
+
+
 @app.get("/api/ranking")
-def api_ranking(by: str = "change"):
+def api_ranking(by: str = "change", weights: str = "balanced"):
+    global _SCORE_WEIGHTS
+    _SCORE_WEIGHTS = SCORE_WEIGHT_PRESETS.get(weights, SCORE_WEIGHT_PRESETS["balanced"])
     """熱度榜排序：
     - change / down: 漲幅 / 跌幅
     - volume:        成交量
@@ -1341,60 +1461,134 @@ def api_ranking(by: str = "change"):
         for it in items:
             it.setdefault("pe_vs_group", None)
 
-    # 多因子綜合評分 (與當初手動腳本一致)
+    # 相對族群強度 (RS) — 1d 用今日漲跌、5d/20d 用 rotation 的多日報酬
+    from statistics import median as _median
+    group_1d: dict[str, list[float]] = {}
+    for it in items:
+        group_1d.setdefault(it["group"], []).append(it["change_pct"])
+    g_med_1d = {g: _median(vs) for g, vs in group_1d.items() if vs}
+    for it in items:
+        med = g_med_1d.get(it["group"], 0)
+        it["rs_1d"] = round(it["change_pct"] - med, 2)
+
+    # 5d / 20d RS — 用 rotation_5d_returns cache
+    try:
+        rs_cache = cache_get("rs:5_20")
+        if rs_cache is None:
+            yf_codes_all = [load_watchlist()[c]["yf"] for c in load_watchlist()]
+            code_list = list(load_watchlist().keys())
+            end_d = pd.Timestamp.today()
+            start_d = end_d - pd.Timedelta(days=60)
+            data = yf.download(yf_codes_all, start=start_d, end=end_d,
+                               auto_adjust=False, progress=False, group_by="ticker", threads=True)
+            cc = pd.DataFrame()
+            for c, yfc in zip(code_list, yf_codes_all):
+                try:
+                    col = data[yfc]["Close"] if len(yf_codes_all) > 1 else data["Close"]
+                    cc[c] = col
+                except Exception:
+                    continue
+            cc = cc.dropna(how="all")
+            rs_cache = {}
+            if len(cc) >= 21:
+                ret_5d  = ((cc.iloc[-1] - cc.iloc[-6])  / cc.iloc[-6]  * 100).to_dict()
+                ret_20d = ((cc.iloc[-1] - cc.iloc[-21]) / cc.iloc[-21] * 100).to_dict()
+                rs_cache = {"r5": ret_5d, "r20": ret_20d}
+            _cache["rs:5_20"] = (time.time() + 1800 - CACHE_TTL, rs_cache)
+
+        r5 = rs_cache.get("r5", {})
+        r20 = rs_cache.get("r20", {})
+
+        g5 = {}
+        g20 = {}
+        for it in items:
+            v5  = r5.get(it["code"])
+            v20 = r20.get(it["code"])
+            if v5 is not None and not pd.isna(v5):
+                g5.setdefault(it["group"], []).append(v5)
+            if v20 is not None and not pd.isna(v20):
+                g20.setdefault(it["group"], []).append(v20)
+        med5  = {g: _median(vs) for g, vs in g5.items()  if vs}
+        med20 = {g: _median(vs) for g, vs in g20.items() if vs}
+
+        for it in items:
+            v5  = r5.get(it["code"])
+            v20 = r20.get(it["code"])
+            it["ret_5d"]  = round(float(v5), 2)  if v5 is not None and not pd.isna(v5) else None
+            it["ret_20d"] = round(float(v20), 2) if v20 is not None and not pd.isna(v20) else None
+            it["rs_5d"]   = round(it["ret_5d"]  - med5.get(it["group"], 0), 2)  if it["ret_5d"]  is not None else None
+            it["rs_20d"]  = round(it["ret_20d"] - med20.get(it["group"], 0), 2) if it["ret_20d"] is not None else None
+    except Exception as e:
+        print(f"[rs] {e}")
+        for it in items:
+            it.setdefault("rs_5d", None)
+            it.setdefault("rs_20d", None)
+
+    # 多因子綜合評分 — 4 種權重 prefab
+    # 透過 api_ranking(?weights=balanced|value|momentum|chip) 切換
     for it in items:
         score = 0
         reasons_plus = []
         reasons_minus = []
-        # 1. PEG
         peg = it.get("peg")
-        if peg is not None and 0 < peg < 1:
-            score += 25; reasons_plus.append(f"PEG {peg:.2f} <1")
-        elif peg is not None and 0 < peg < 1.5:
-            score += 12; reasons_plus.append(f"PEG {peg:.2f}")
-        # 2. 同族群相對 PE
         rel = it.get("pe_vs_group")
-        if rel is not None and rel < -20:
-            score += 20; reasons_plus.append(f"族群 PE -{abs(rel):.0f}%")
-        elif rel is not None and rel < -10:
-            score += 10; reasons_plus.append(f"族群 PE -{abs(rel):.0f}%")
-        # 3. 機構共識
         inst = it.get("inst_pct", 0) or 0
-        if inst > 80:
-            score += 15; reasons_plus.append(f"機構 {inst:.0f}%")
-        elif inst > 60:
-            score += 8; reasons_plus.append(f"機構 {inst:.0f}%")
-        # 4. 短線勝率
         wr = it.get("win_rate", 0) or 0
-        if wr >= 65:
-            score += 15; reasons_plus.append(f"勝率 {wr}%")
-        elif wr >= 55:
-            score += 8; reasons_plus.append(f"勝率 {wr}%")
-        # 5. 訊號 (顏色)
         sigs = it.get("signals", []) or []
         bull = sum(1 for s in sigs if s.get("color") == "red")
         bear = sum(1 for s in sigs if s.get("color") == "green")
         overheat = sum(1 for s in sigs if s.get("color") == "orange")
+        rsi_v = it.get("rsi", 50) or 50
+        trend = it.get("trend", "")
+        rs5 = it.get("rs_5d") or 0
+
+        W = _SCORE_WEIGHTS  # 引用全域權重表 (依 weights 參數選定)
+
+        # 1. PEG (估值)
+        if peg is not None and 0 < peg < 1:
+            score += W["peg_strong"]; reasons_plus.append(f"PEG {peg:.2f} <1")
+        elif peg is not None and 0 < peg < 1.5:
+            score += W["peg_weak"]; reasons_plus.append(f"PEG {peg:.2f}")
+        # 2. 同族群相對 PE (估值)
+        if rel is not None and rel < -20:
+            score += W["relpe_strong"]; reasons_plus.append(f"族群 PE -{abs(rel):.0f}%")
+        elif rel is not None and rel < -10:
+            score += W["relpe_weak"]; reasons_plus.append(f"族群 PE -{abs(rel):.0f}%")
+        # 3. 機構共識 (籌碼)
+        if inst > 80:
+            score += W["inst_high"]; reasons_plus.append(f"機構 {inst:.0f}%")
+        elif inst > 60:
+            score += W["inst_mid"]; reasons_plus.append(f"機構 {inst:.0f}%")
+        # 4. 短線勝率 (動能)
+        if wr >= 65:
+            score += W["win_high"]; reasons_plus.append(f"勝率 {wr}%")
+        elif wr >= 55:
+            score += W["win_mid"]; reasons_plus.append(f"勝率 {wr}%")
+        # 5. 訊號 (動能)
         if bull >= 2:
-            score += 10; reasons_plus.append(f"{bull} 多頭訊號")
+            score += W["bull_multi"]; reasons_plus.append(f"{bull} 多頭訊號")
         elif bull == 1:
-            score += 5
-        score -= bear * 8
-        score -= overheat * 5
+            score += W["bull_one"]
+        score += W["bear_each"] * bear
+        score += W["overheat_each"] * overheat
         if bear: reasons_minus.append(f"{bear} 空頭訊號")
         if overheat: reasons_minus.append(f"{overheat} 過熱警示")
         # 6. RSI 極端
-        rsi_v = it.get("rsi", 50) or 50
         if rsi_v > 75:
-            score -= 12; reasons_minus.append(f"RSI {rsi_v:.0f} 超買")
+            score += W["rsi_overbought"]; reasons_minus.append(f"RSI {rsi_v:.0f} 超買")
         elif rsi_v < 30:
-            score += 8; reasons_plus.append(f"RSI {rsi_v:.0f} 超賣")
+            score += W["rsi_oversold"]; reasons_plus.append(f"RSI {rsi_v:.0f} 超賣")
         # 7. 趨勢
-        trend = it.get("trend", "")
         if "多頭" in trend:
-            score += 5
+            score += W["trend_bull"]
         elif "空頭" in trend:
-            score -= 5; reasons_minus.append("空頭趨勢")
+            score += W["trend_bear"]; reasons_minus.append("空頭趨勢")
+        # 8. RS 5d (動能 — 比族群跑得快)
+        if rs5 > 5:
+            score += W["rs5_strong"]; reasons_plus.append(f"5日比族群 +{rs5:.1f}%")
+        elif rs5 < -5:
+            score += W["rs5_weak"]; reasons_minus.append(f"5日比族群 {rs5:.1f}%")
+
         it["score"] = score
         it["score_plus"]  = reasons_plus
         it["score_minus"] = reasons_minus
@@ -1405,6 +1599,10 @@ def api_ranking(by: str = "change"):
     def _relpe_key(x):
         v = x.get("pe_vs_group")
         return v if v is not None else 9999
+
+    def _rs1d(x): return -(x.get("rs_1d")  or -999)
+    def _rs5d(x): return -(x.get("rs_5d")  or -999)
+    def _rs20(x): return -(x.get("rs_20d") or -999)
 
     keymap = {
         "change":   lambda x: -x["change_pct"],
@@ -1419,6 +1617,9 @@ def api_ranking(by: str = "change"):
         "bias":     lambda x: -abs(x["bias"]),
         "inst":     lambda x: -x["inst_pct"],
         "inst10":   lambda x: -x["inst_top10"],
+        "rs1d":     _rs1d,                             # 📊 族群相對強度 1d
+        "rs5d":     _rs5d,                             # 📊 族群相對強度 5d
+        "rs20d":    _rs20,                             # 📊 族群相對強度 20d
         "score":    lambda x: -x["score"],          # 🎯 綜合評分
         "peg":      _peg_key,            # PEG 最低（< 1 = 相對便宜）
         "relpe":    _relpe_key,          # 相對族群 P/E 最低（同族群最便宜）
@@ -1514,6 +1715,14 @@ def api_telegram_get():
 class AlertReq(BaseModel):
     above: Optional[float] = None
     below: Optional[float] = None
+    rsi_above: Optional[float] = None
+    rsi_below: Optional[float] = None
+    on_golden_cross: Optional[bool] = None
+    on_death_cross:  Optional[bool] = None
+    on_kd_cross_up:  Optional[bool] = None
+    on_breakout:     Optional[bool] = None
+    on_breakdown:    Optional[bool] = None
+    on_signal_burst: Optional[int]  = None
 
 
 @app.get("/api/alerts")
@@ -1525,12 +1734,22 @@ def api_get_alerts():
 def api_set_alert(code: str, req: AlertReq):
     alerts = load_alerts()
     rule = alerts.get(code, {})
-    rule["above"] = req.above
-    rule["below"] = req.below
+    # 將提供的欄位寫入 rule (None 視為清除)
+    for field in ["above", "below", "rsi_above", "rsi_below",
+                  "on_golden_cross", "on_death_cross", "on_kd_cross_up",
+                  "on_breakout", "on_breakdown", "on_signal_burst"]:
+        val = getattr(req, field, None)
+        if val is not None:
+            rule[field] = val
+        else:
+            rule.pop(field, None)
+    # 初始化 last_price / last_rsi (用於後續變化偵測)
     if "last_price" not in rule:
         try:
             d = fetch_stock(code)
             rule["last_price"] = d["price"]
+            rule["last_rsi"]   = d.get("rsi", 50)
+            rule["last_sig_keys"] = [s["key"] for s in d.get("signals", [])]
         except Exception:
             rule["last_price"] = 0
     alerts[code] = rule
@@ -1999,6 +2218,82 @@ def api_group_heatmap():
         })
     out.sort(key=lambda x: -x["avg_change"])
     return out
+
+
+@app.get("/api/group-rotation")
+def api_group_rotation():
+    """族群輪動偵測：每族群的 1W / 1M / 3M 平均報酬 + 動量加速度。
+    用於觀察「資金正從 X 族群流向 Y 族群」訊號。"""
+    cache_key = "rotation:90d"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    wl = load_watchlist()
+    codes = list(wl.keys())
+    yf_codes = [wl[c]["yf"] for c in codes]
+    end = pd.Timestamp.today()
+    start = end - pd.Timedelta(days=120)
+    try:
+        data = yf.download(yf_codes, start=start, end=end, auto_adjust=False,
+                           progress=False, group_by="ticker", threads=True)
+    except Exception as e:
+        raise HTTPException(503, f"yfinance batch fail: {e}")
+
+    closes = pd.DataFrame()
+    for c, yfc in zip(codes, yf_codes):
+        try:
+            col = data[yfc]["Close"] if len(yf_codes) > 1 else data["Close"]
+            closes[c] = col
+        except Exception:
+            continue
+    closes = closes.dropna(how="all")
+    if len(closes) < 30:
+        raise HTTPException(503, "資料不足")
+
+    def n_day_ret(n):
+        if len(closes) < n + 1:
+            return {}
+        return ((closes.iloc[-1] - closes.iloc[-n-1]) / closes.iloc[-n-1] * 100).to_dict()
+
+    ret_1w = n_day_ret(5)
+    ret_1m = n_day_ret(20)
+    ret_3m = n_day_ret(60) if len(closes) >= 61 else {}
+
+    by_group: dict[str, list[str]] = {}
+    for code in closes.columns:
+        g = wl.get(code, {}).get("group", "其他")
+        by_group.setdefault(g, []).append(code)
+
+    from statistics import mean as _mean
+    rotation = []
+    for g, members in by_group.items():
+        def clean(d):
+            vals = [v for v in (d.get(c) for c in members) if v is not None and not pd.isna(v)]
+            return vals
+
+        r1w_v = clean(ret_1w)
+        r1m_v = clean(ret_1m)
+        r3m_v = clean(ret_3m)
+        r1w = _mean(r1w_v) if r1w_v else 0
+        r1m = _mean(r1m_v) if r1m_v else 0
+        r3m = _mean(r3m_v) if r3m_v else 0
+        # 動量加速度 = 本週均報酬 vs 過去四週平均（年化視角）
+        # 正 = 加速、負 = 減速
+        momentum = round(r1w - (r1m / 4), 2) if r1m_v and r1w_v else 0
+
+        rotation.append({
+            "group":    g,
+            "n":        len(members),
+            "ret_1w":   round(r1w, 2),
+            "ret_1m":   round(r1m, 2),
+            "ret_3m":   round(r3m, 2),
+            "momentum": momentum,
+            "members":  members,
+        })
+    rotation.sort(key=lambda x: -x["momentum"])
+    cache_set(cache_key, rotation)
+    return rotation
 
 
 # ============================================================================
