@@ -1199,9 +1199,19 @@
 
       <label style="font-size:12px; color:var(--muted);">族群</label>
       <select id="btGroup" style="padding:6px 10px; background:var(--bg-2); color:var(--text); border:1px solid var(--line); border-radius:8px;">
-        <option value="七巨頭">七巨頭</option>
-        <option value="半導體">半導體</option>
-        <option value="AI 概念">AI 概念</option>
+        <option value="GPU / 加速器">GPU / 加速器</option>
+        <option value="網路 Fabric">網路 Fabric</option>
+        <option value="伺服器組裝">伺服器組裝</option>
+        <option value="電力 / 散熱">電力 / 散熱</option>
+        <option value="Hyperscalers">Hyperscalers</option>
+        <option value="半導體設備">半導體設備</option>
+        <option value="晶圓代工">晶圓代工</option>
+        <option value="IC 設計">IC 設計</option>
+        <option value="記憶體">記憶體</option>
+        <option value="雲端 / SaaS">雲端 / SaaS</option>
+        <option value="資訊安全">資訊安全</option>
+        <option value="消費電子">消費電子</option>
+        <option value="EV / 自駕">EV / 自駕</option>
         <option value="其他">其他</option>
       </select>
 
@@ -1258,12 +1268,32 @@
     <label>族群分類</label>
     <select id="addGroup">
       <option value="自選">自選</option>
-      <option value="七巨頭">七巨頭</option>
-      <option value="半導體">半導體</option>
-      <option value="AI 概念">AI 概念</option>
-      <option value="EV">EV / 自駕</option>
-      <option value="金融">金融</option>
-      <option value="其他">其他</option>
+      <optgroup label="AI 基礎設施 (Hardware)">
+        <option value="GPU / 加速器">GPU / 加速器</option>
+        <option value="網路 Fabric">網路 Fabric</option>
+        <option value="伺服器組裝">伺服器組裝</option>
+        <option value="電力 / 散熱">電力 / 散熱</option>
+        <option value="Hyperscalers">Hyperscalers</option>
+      </optgroup>
+      <optgroup label="半導體 (Semiconductor)">
+        <option value="半導體設備">半導體設備 (WFE)</option>
+        <option value="晶圓代工">晶圓代工</option>
+        <option value="IC 設計">IC 設計</option>
+        <option value="記憶體">記憶體</option>
+        <option value="類比 / 功率">類比 / 功率</option>
+      </optgroup>
+      <optgroup label="企業軟體 (Software)">
+        <option value="雲端 / SaaS">雲端 / SaaS</option>
+        <option value="資訊安全">資訊安全</option>
+        <option value="設計軟體 (EDA)">設計軟體 (EDA)</option>
+      </optgroup>
+      <optgroup label="其他">
+        <option value="消費電子">消費電子</option>
+        <option value="EV / 自駕">EV / 自駕</option>
+        <option value="金融">金融</option>
+        <option value="持股">持股</option>
+        <option value="其他">其他</option>
+      </optgroup>
     </select>
 
     <div class="probe-result" id="addResult"></div>

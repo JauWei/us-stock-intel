@@ -43,26 +43,54 @@ GEMINI_FILE    = ROOT / "gemini.json"
 # Default watchlist (首次啟動時寫入 watchlist.json)
 # ----------------------------------------------------------------------------
 DEFAULT_WATCHLIST: dict[str, dict[str, str]] = {
-    # 七巨頭 Magnificent 7
-    "AAPL":  {"name": "Apple",       "tag": "Tech · 消費電子",        "yf": "AAPL",  "group": "七巨頭"},
-    "MSFT":  {"name": "Microsoft",   "tag": "Tech · 雲端 / Office",   "yf": "MSFT",  "group": "七巨頭"},
-    "GOOGL": {"name": "Alphabet",    "tag": "Tech · 搜尋 / 廣告",     "yf": "GOOGL", "group": "七巨頭"},
-    "AMZN":  {"name": "Amazon",      "tag": "Tech · 電商 / AWS",      "yf": "AMZN",  "group": "七巨頭"},
-    "META":  {"name": "Meta",        "tag": "Tech · 社群 / VR",       "yf": "META",  "group": "七巨頭"},
-    "NVDA":  {"name": "NVIDIA",      "tag": "半導體 · GPU / AI",      "yf": "NVDA",  "group": "七巨頭"},
-    "TSLA":  {"name": "Tesla",       "tag": "EV / 自駕",              "yf": "TSLA",  "group": "七巨頭"},
-    # 半導體 Semiconductor
-    "AMD":   {"name": "AMD",         "tag": "半導體 · CPU / GPU",     "yf": "AMD",   "group": "半導體"},
-    "AVGO":  {"name": "Broadcom",    "tag": "半導體 · 網通 / ASIC",   "yf": "AVGO",  "group": "半導體"},
-    "TSM":   {"name": "TSMC ADR",    "tag": "半導體 · 晶圓代工",      "yf": "TSM",   "group": "半導體"},
-    "QCOM":  {"name": "Qualcomm",    "tag": "半導體 · 手機 SoC",      "yf": "QCOM",  "group": "半導體"},
-    "ARM":   {"name": "Arm Holdings","tag": "半導體 · IP",            "yf": "ARM",   "group": "半導體"},
-    # AI 概念
-    "PLTR":  {"name": "Palantir",    "tag": "AI · 軟體 / 數據",       "yf": "PLTR",  "group": "AI 概念"},
-    "SMCI":  {"name": "Super Micro", "tag": "AI · 伺服器",            "yf": "SMCI",  "group": "AI 概念"},
-    # 流媒體 / 金融
-    "NFLX":  {"name": "Netflix",     "tag": "流媒體",                  "yf": "NFLX",  "group": "其他"},
-    "JPM":   {"name": "JPMorgan",    "tag": "金融 · 銀行",            "yf": "JPM",   "group": "其他"},
+    # === AI 基礎設施 (Hardware Layer) ===
+    # GPU / 加速器
+    "NVDA":  {"name": "NVIDIA",       "tag": "GPU · AI 訓練 / 推論",       "yf": "NVDA",  "group": "GPU / 加速器"},
+    "AMD":   {"name": "AMD",          "tag": "GPU / CPU · MI300X",         "yf": "AMD",   "group": "GPU / 加速器"},
+
+    # 網路晶片 / Fabric
+    "AVGO":  {"name": "Broadcom",     "tag": "網通 · ASIC / 交換器",       "yf": "AVGO",  "group": "網路 Fabric"},
+    "MRVL":  {"name": "Marvell",      "tag": "資料中心 · DPU / 互連",      "yf": "MRVL",  "group": "網路 Fabric"},
+    "ANET":  {"name": "Arista",       "tag": "高速交換器 · 雲端網路",      "yf": "ANET",  "group": "網路 Fabric"},
+
+    # 伺服器組裝
+    "SMCI":  {"name": "Super Micro",  "tag": "AI 伺服器 / 液冷整合",       "yf": "SMCI",  "group": "伺服器組裝"},
+
+    # 電力 / 散熱 (AI 缺電題材)
+    "VRT":   {"name": "Vertiv",       "tag": "資料中心散熱 / UPS",         "yf": "VRT",   "group": "電力 / 散熱"},
+    "CEG":   {"name": "Constellation","tag": "核能電力 · AI 缺電題材",     "yf": "CEG",   "group": "電力 / 散熱"},
+
+    # Hyperscalers (買家層 / 資本支出端)
+    "MSFT":  {"name": "Microsoft",    "tag": "雲端 Azure / Copilot",        "yf": "MSFT",  "group": "Hyperscalers"},
+    "GOOGL": {"name": "Alphabet",     "tag": "搜尋 / 廣告 / GCP",           "yf": "GOOGL", "group": "Hyperscalers"},
+    "AMZN":  {"name": "Amazon",       "tag": "AWS / 電商",                  "yf": "AMZN",  "group": "Hyperscalers"},
+    "META":  {"name": "Meta",         "tag": "社群 / Llama / Reality Labs", "yf": "META",  "group": "Hyperscalers"},
+
+    # === 半導體循環 (Semiconductor Cycles) ===
+    # 半導體設備 (WFE)
+    "ASML":  {"name": "ASML",         "tag": "微影設備 · EUV 壟斷",        "yf": "ASML",  "group": "半導體設備"},
+    "AMAT":  {"name": "Applied Mat.", "tag": "半導體設備 · 蝕刻沉積",      "yf": "AMAT",  "group": "半導體設備"},
+
+    # 晶圓代工
+    "TSM":   {"name": "TSMC ADR",     "tag": "晶圓代工 · 全球領導",        "yf": "TSM",   "group": "晶圓代工"},
+
+    # IC 設計
+    "QCOM":  {"name": "Qualcomm",     "tag": "手機 SoC / 5G",               "yf": "QCOM",  "group": "IC 設計"},
+    "ARM":   {"name": "Arm Holdings", "tag": "IP / 矽智財",                 "yf": "ARM",   "group": "IC 設計"},
+
+    # 記憶體
+    "MU":    {"name": "Micron",       "tag": "記憶體 · DRAM / HBM",         "yf": "MU",    "group": "記憶體"},
+
+    # === 軟體 (Enterprise Software) ===
+    "PLTR":  {"name": "Palantir",     "tag": "AI SaaS / 數據分析",         "yf": "PLTR",  "group": "雲端 / SaaS"},
+    "CRM":   {"name": "Salesforce",   "tag": "雲端 CRM / Agentforce",      "yf": "CRM",   "group": "雲端 / SaaS"},
+    "CRWD":  {"name": "CrowdStrike",  "tag": "資訊安全 · 端點防護",        "yf": "CRWD",  "group": "資訊安全"},
+
+    # === EV / 其他 ===
+    "AAPL":  {"name": "Apple",        "tag": "消費電子 · iPhone",          "yf": "AAPL",  "group": "消費電子"},
+    "TSLA":  {"name": "Tesla",        "tag": "EV / 自駕 / Robotaxi",       "yf": "TSLA",  "group": "EV / 自駕"},
+    "NFLX":  {"name": "Netflix",      "tag": "流媒體",                      "yf": "NFLX",  "group": "其他"},
+    "JPM":   {"name": "JPMorgan",     "tag": "金融 · 銀行",                "yf": "JPM",   "group": "其他"},
 }
 
 CACHE_TTL = 300
@@ -98,12 +126,35 @@ def save_json(p: Path, data: Any) -> None:
         p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _migrate_watchlist_groups(wl: dict) -> dict:
+    """套用 DEFAULT_WATCHLIST 的最新族群分類到既有清單。
+    規則：
+    - 既有代號若在 DEFAULT 內，更新 group / tag 為新版（族群細分）
+    - 既有代號不在 DEFAULT 內（user 自行加的，例如「持股」群組）→ 保留不動
+    - DEFAULT 有但既有清單沒有 → 不自動加入
+    """
+    changed = False
+    for code, default_meta in DEFAULT_WATCHLIST.items():
+        if code in wl:
+            cur = wl[code]
+            if cur.get("group") != default_meta["group"] or cur.get("tag") != default_meta["tag"]:
+                cur["group"] = default_meta["group"]
+                cur["tag"]   = default_meta["tag"]
+                if not cur.get("name"):
+                    cur["name"] = default_meta["name"]
+                changed = True
+    if changed:
+        save_json(WATCHLIST_FILE, wl)
+        print(f"[migrate] watchlist 族群分類已套用最新版")
+    return wl
+
+
 def load_watchlist() -> dict:
     wl = load_json(WATCHLIST_FILE, None)
     if wl is None:
         save_json(WATCHLIST_FILE, DEFAULT_WATCHLIST)
         return DEFAULT_WATCHLIST.copy()
-    return wl
+    return _migrate_watchlist_groups(wl)
 
 
 def load_alerts() -> dict:
@@ -1441,6 +1492,27 @@ def api_del_alert(code: str):
 def api_refresh():
     _cache.clear()
     return {"ok": True, "msg": "快取已清除"}
+
+
+@app.post("/api/seed-defaults")
+def api_seed_defaults():
+    """把 DEFAULT_WATCHLIST 中還沒在 watchlist.json 的股票補進去。
+    用於升級族群分類後一鍵加入新建議標的（不會碰使用者既有清單）。
+    """
+    wl = load_watchlist()
+    added = []
+    for code, meta in DEFAULT_WATCHLIST.items():
+        if code not in wl:
+            wl[code] = dict(meta)
+            added.append(code)
+    if added:
+        save_json(WATCHLIST_FILE, wl)
+        # 清快取讓清單與排行重新計算
+        for k in list(_cache.keys()):
+            if k.startswith("summary:") or k.startswith("stock:") or k == "valn-ranking":
+                _cache.pop(k, None)
+    return {"ok": True, "added": added, "n_added": len(added),
+            "msg": f"已新增 {len(added)} 檔到觀察清單"}
 
 
 # ============================================================================
