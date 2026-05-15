@@ -1341,6 +1341,64 @@ def api_ranking(by: str = "change"):
         for it in items:
             it.setdefault("pe_vs_group", None)
 
+    # 多因子綜合評分 (與當初手動腳本一致)
+    for it in items:
+        score = 0
+        reasons_plus = []
+        reasons_minus = []
+        # 1. PEG
+        peg = it.get("peg")
+        if peg is not None and 0 < peg < 1:
+            score += 25; reasons_plus.append(f"PEG {peg:.2f} <1")
+        elif peg is not None and 0 < peg < 1.5:
+            score += 12; reasons_plus.append(f"PEG {peg:.2f}")
+        # 2. 同族群相對 PE
+        rel = it.get("pe_vs_group")
+        if rel is not None and rel < -20:
+            score += 20; reasons_plus.append(f"族群 PE -{abs(rel):.0f}%")
+        elif rel is not None and rel < -10:
+            score += 10; reasons_plus.append(f"族群 PE -{abs(rel):.0f}%")
+        # 3. 機構共識
+        inst = it.get("inst_pct", 0) or 0
+        if inst > 80:
+            score += 15; reasons_plus.append(f"機構 {inst:.0f}%")
+        elif inst > 60:
+            score += 8; reasons_plus.append(f"機構 {inst:.0f}%")
+        # 4. 短線勝率
+        wr = it.get("win_rate", 0) or 0
+        if wr >= 65:
+            score += 15; reasons_plus.append(f"勝率 {wr}%")
+        elif wr >= 55:
+            score += 8; reasons_plus.append(f"勝率 {wr}%")
+        # 5. 訊號 (顏色)
+        sigs = it.get("signals", []) or []
+        bull = sum(1 for s in sigs if s.get("color") == "red")
+        bear = sum(1 for s in sigs if s.get("color") == "green")
+        overheat = sum(1 for s in sigs if s.get("color") == "orange")
+        if bull >= 2:
+            score += 10; reasons_plus.append(f"{bull} 多頭訊號")
+        elif bull == 1:
+            score += 5
+        score -= bear * 8
+        score -= overheat * 5
+        if bear: reasons_minus.append(f"{bear} 空頭訊號")
+        if overheat: reasons_minus.append(f"{overheat} 過熱警示")
+        # 6. RSI 極端
+        rsi_v = it.get("rsi", 50) or 50
+        if rsi_v > 75:
+            score -= 12; reasons_minus.append(f"RSI {rsi_v:.0f} 超買")
+        elif rsi_v < 30:
+            score += 8; reasons_plus.append(f"RSI {rsi_v:.0f} 超賣")
+        # 7. 趨勢
+        trend = it.get("trend", "")
+        if "多頭" in trend:
+            score += 5
+        elif "空頭" in trend:
+            score -= 5; reasons_minus.append("空頭趨勢")
+        it["score"] = score
+        it["score_plus"]  = reasons_plus
+        it["score_minus"] = reasons_minus
+
     def _peg_key(x):
         v = x.get("peg")
         return v if (v is not None and v > 0) else 9999
@@ -1361,6 +1419,7 @@ def api_ranking(by: str = "change"):
         "bias":     lambda x: -abs(x["bias"]),
         "inst":     lambda x: -x["inst_pct"],
         "inst10":   lambda x: -x["inst_top10"],
+        "score":    lambda x: -x["score"],          # 🎯 綜合評分
         "peg":      _peg_key,            # PEG 最低（< 1 = 相對便宜）
         "relpe":    _relpe_key,          # 相對族群 P/E 最低（同族群最便宜）
     }

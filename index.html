@@ -1102,7 +1102,8 @@
       <span class="spacer" style="flex:0 0 12px;"></span>
       <span style="color:var(--muted); font-size:12px;">排序：</span>
       <div class="seg" id="rankSeg">
-        <div class="opt active" data-by="change">漲幅</div>
+        <div class="opt active" data-by="score">🎯 綜合評分</div>
+        <div class="opt" data-by="change">漲幅</div>
         <div class="opt" data-by="down">跌幅</div>
         <div class="opt" data-by="volume">成交量</div>
         <div class="opt" data-by="win">短線勝率</div>
@@ -1123,7 +1124,7 @@
       <table class="rank-table" id="rankTable">
         <thead>
           <tr>
-            <th>排名</th><th>代號</th><th>名稱</th><th>族群</th>
+            <th>排名</th><th>🎯 分數</th><th>代號</th><th>名稱</th><th>族群</th>
             <th>價格</th><th>漲跌幅</th><th>成交量</th>
             <th>評等</th><th>RSI</th><th>趨勢</th><th>🐋 機構%</th><th>💰 PEG / 相對 PE</th><th>訊號</th>
           </tr>
@@ -2062,7 +2063,7 @@ function updatePatterns(s) {
  * ======================================================================= */
 async function loadRanking(by = "change") {
   const tbody = document.querySelector("#rankTable tbody");
-  tbody.innerHTML = `<tr><td colspan="13" style="padding:30px; color:var(--muted);">📡 載入中（首次抓 13F + 估值約 15-40 秒）...</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="14" style="padding:30px; color:var(--muted);">📡 載入中（首次抓 13F + 估值約 15-40 秒）...</td></tr>`;
   try {
     const items = await apiGet(`/api/ranking?by=${by}`, 90000);
     document.getElementById("rankCount").textContent = items.length + " 檔";
@@ -2075,7 +2076,6 @@ async function loadRanking(by = "change") {
       const inst = (r.inst_pct || 0).toFixed(1);
       const inst10 = (r.inst_top10 || 0).toFixed(1);
       const isInstSort = (by === "inst" || by === "inst10");
-      // 估值
       const peg = r.peg;
       const pegStr = peg != null ? peg.toFixed(2) : "—";
       const pegColor = peg != null && peg > 0 && peg < 1 ? "var(--green)"
@@ -2086,9 +2086,20 @@ async function loadRanking(by = "change") {
       const relColor = relPe != null && relPe < -10 ? "var(--green)"
                      : relPe != null && relPe > 20  ? "var(--orange)" : "var(--muted)";
       const isValSort = (by === "peg" || by === "relpe");
+      // 綜合評分
+      const score = r.score || 0;
+      const scoreColor = score >= 50 ? "var(--red)"
+                       : score >= 30 ? "var(--orange)"
+                       : score >= 10 ? "var(--cyan)"
+                       : score >= 0  ? "var(--muted)" : "var(--green)";
+      const plus = (r.score_plus  || []).join(" · ");
+      const minus= (r.score_minus || []).join(" · ");
+      const tip = `加分：${plus || '無'}\n扣分：${minus || '無'}`;
+      const isScoreSort = (by === "score");
       return `
         <tr data-code="${r.code}">
           <td><span class="rank-num ${rankCls}">${i+1}</span></td>
+          <td title="${tip.replace(/"/g, '&quot;')}" style="font-weight:${isScoreSort?'800':'700'}; font-size:${isScoreSort?'18px':'15px'}; color:${scoreColor};">${score >= 0 ? "+" : ""}${score}</td>
           <td><strong style="color:var(--yellow);">${r.code}</strong></td>
           <td>${r.name}</td>
           <td><span style="font-size:11px; color:var(--muted);">${r.group || '—'}</span></td>
@@ -2105,7 +2116,7 @@ async function loadRanking(by = "change") {
           </td>
           <td style="text-align:left;">${sigs}</td>
         </tr>`;
-    }).join("") || `<tr><td colspan="13" style="padding:30px; color:var(--muted);">無資料</td></tr>`;
+    }).join("") || `<tr><td colspan="14" style="padding:30px; color:var(--muted);">無資料</td></tr>`;
     tbody.querySelectorAll("tr[data-code]").forEach(tr => {
       tr.addEventListener("click", () => {
         state.activeCode = tr.dataset.code;
