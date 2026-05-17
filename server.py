@@ -2728,11 +2728,8 @@ def api_portfolio_risk():
         except Exception:
             return None
 
-    # 3. Per-holding metrics
-    holdings = []
-    total_value = 0.0
-    total_pnl   = 0.0
-    by_group = {}
+    # 3. Per-holding metrics — 先依 code 聚合多筆同檔
+    agg: dict[str, dict] = {}
     for h in p:
         code = h.get("code")
         if not code: continue
@@ -2741,28 +2738,46 @@ def api_portfolio_risk():
             price = float(s["price"])
         except Exception:
             price = float(h.get("cost_price", 0))
-        yf_code = wl.get(code, {}).get("yf", code)
-        group   = wl.get(code, {}).get("group", "其他")
         shares  = float(h.get("shares", 0))
         cost_p  = float(h.get("cost_price", 0))
-        value   = shares * price
-        pnl     = value - shares * cost_p
+        entry = agg.get(code)
+        if entry:
+            entry["shares"] += shares
+            entry["cost"]   += shares * cost_p
+        else:
+            agg[code] = {
+                "code":   code,
+                "name":   wl.get(code, {}).get("name", code),
+                "group":  wl.get(code, {}).get("group", "其他"),
+                "yf":     wl.get(code, {}).get("yf", code),
+                "shares": shares,
+                "cost":   shares * cost_p,
+                "price":  price,
+            }
+
+    holdings = []
+    total_value = 0.0
+    total_pnl   = 0.0
+    by_group = {}
+    for code, e in agg.items():
+        value = e["shares"] * e["price"]
+        pnl   = value - e["cost"]
         total_value += value
         total_pnl   += pnl
-        beta = _beta(yf_code)
+        beta = _beta(e["yf"])
         holdings.append({
             "code":   code,
-            "name":   wl.get(code, {}).get("name", code),
-            "group":  group,
-            "shares": shares,
-            "price":  price,
+            "name":   e["name"],
+            "group":  e["group"],
+            "shares": e["shares"],
+            "price":  e["price"],
             "value":  value,
             "pnl":    pnl,
             "beta":   beta,
-            "yf":     yf_code,
+            "yf":     e["yf"],
         })
-        by_group.setdefault(group, 0)
-        by_group[group] += value
+        by_group.setdefault(e["group"], 0)
+        by_group[e["group"]] += value
 
     # 4. Weights + contributions
     for h in holdings:

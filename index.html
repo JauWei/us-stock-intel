@@ -2167,13 +2167,14 @@ async function loadRisk() {
 
     // Correlation matrix
     const codes = r.corr_codes || [];
+    const mat = r.corr_matrix || [];
     let corrHtml = "";
-    if (codes.length > 0 && r.corr_matrix) {
+    if (codes.length > 0 && mat.length === codes.length && mat[0]?.length === codes.length) {
       const cols = `40px ${codes.map(()=>'1fr').join(' ')}`;
       const header = `<div class="corr-cell header"></div>` + codes.map(c=>`<div class="corr-cell header">${c}</div>`).join("");
       const rows = codes.map((c, i) => {
         const cells = codes.map((c2, j) => {
-          const v = r.corr_matrix[i][j];
+          const v = mat[i]?.[j];
           if (i === j) return `<div class="corr-cell diag">—</div>`;
           if (v == null) return `<div class="corr-cell">—</div>`;
           const bg = v >= 0.8 ? "rgba(255,90,118,0.35)" : v >= 0.5 ? "rgba(255,165,0,0.25)" : v >= 0.2 ? "rgba(0,229,255,0.15)" : "var(--bg-2)";
