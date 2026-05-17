@@ -1080,6 +1080,7 @@ def check_alert(code: str, price: float, prev: float, name: str = "",
     - rsi_above / rsi_below: RSI 越過閾值
     - on_golden_cross / on_death_cross: 黃金/死亡交叉
     - on_signal_burst: 訊號總數 >= N
+    - drawdown_pct: 從近 60d 高點回檔 >= N%
     """
     alerts = load_alerts()
     rule = alerts.get(code)
@@ -1126,6 +1127,24 @@ def check_alert(code: str, price: float, prev: float, name: str = "",
     if burst_n is not None and len(sig_keys) >= int(burst_n) and len(last_sig_keys) < int(burst_n):
         labels = "、".join(s.get("label", "") for s in (signals or [])[:5])
         triggered.append(f"🎯 *{name} ({code})* 訊號爆發！{len(sig_keys)} 個訊號:\n{labels}")
+
+    # 5. Drawdown 警示 (從 60d 高點回檔 X%)
+    dd_pct = rule.get("drawdown_pct")
+    if dd_pct is not None:
+        # 動態追蹤 60d 高點
+        peak = rule.get("peak_price")
+        if peak is None or price > float(peak):
+            peak = price
+        rule["peak_price"] = peak
+        last_dd = rule.get("last_drawdown", 0) or 0
+        cur_dd  = (peak - price) / peak * 100 if peak else 0
+        # 只在第一次跨越閾值時推
+        if cur_dd >= float(dd_pct) and last_dd < float(dd_pct):
+            triggered.append(
+                f"🩸 *{name} ({code})* 從 60d 高點回檔 *{cur_dd:.1f}%*\n"
+                f"高點 *${peak:.2f}* → 現價 *${price:.2f}* (閾值 {dd_pct}%)"
+            )
+        rule["last_drawdown"] = cur_dd
 
     # 更新狀態
     rule["last_price"]   = price
@@ -2434,23 +2453,29 @@ def api_index(period: str = "D"):
 # ============================================================================
 @app.get("/api/backtest")
 def api_backtest(
-    strategy:    str   = "momentum",   # momentum | meanrev | win_rate | group | hot_group
+    strategy:    str   = "momentum",
     start:       str   = "",
     end:         str   = "",
     capital:     float = 100_000.0,
     hold_days:   int   = 5,
     n_positions: int   = 5,
-    threshold:   float = 65,           # for win_rate
+    threshold:   float = 65,           # for win_rate / score
     group:       str   = "七巨頭",
-    universe:    str   = "watchlist",  # 'watchlist' | 'group:七巨頭' | ...
+    universe:    str   = "watchlist",  # 'watchlist' | 'group:七巨頭' | 'magseven'
 ):
     """每日 simulate 的簡化回測引擎。
     策略：
-      momentum  – 每日買漲幅前 N
-      meanrev   – 每日買跌幅前 N
-      win_rate  – 短線勝率 >= threshold 的所有股 (取 N 檔)
-      group     – 都買指定族群
-      hot_group – 都買當日漲幅最高的族群
+      momentum       – 每日買漲幅前 N
+      meanrev        – 每日買跌幅前 N
+      win_rate       – 短線勝率 >= threshold (取 N 檔)
+      group          – 都買指定族群
+      hot_group      – 都買當日漲幅最高的族群
+      score          – 多因子綜合評分 top N (MA20 + RSI + 動能 + 量能)
+      golden_cross   – MA5 上穿 MA20 進場,死叉出場 (覆蓋 hold_days)
+      rsi_oversold   – RSI < threshold 且 MA5>MA20 進場,RSI > 60 出場
+      new_high       – 創 60 日新高 + 量能 > 1.3x 均量 進場
+      rs_rotation    – 每月底買近 20 日漲幅最強族群前 2 檔,持有 1 個月
+      earnings_drift – 連 2 季 (簡化:近 90 日漲 > 10%) 強勢股,提前持有 hold_days
     持股 hold_days 天後賣出，等比配重，benchmark = ^GSPC。
     """
     if not start:
@@ -2546,6 +2571,116 @@ def api_backtest(
             avgs = {g: sum(v)/len(v) for g, v in grp_returns.items() if v}
             best_g = max(avgs, key=avgs.get)
             return [c for c in closes.columns if (wl.get(c, {}).get("group") or "") == best_g]
+
+        if strategy == "score":
+            # 多因子綜合評分
+            picks = []
+            for c in closes.columns:
+                hist = closes[c].iloc[:day_idx+1].dropna()
+                if len(hist) < 20: continue
+                ma5  = hist.iloc[-5:].mean()
+                ma20 = hist.iloc[-20:].mean()
+                cur  = hist.iloc[-1]
+                delta = hist.diff().iloc[-14:].dropna()
+                gain = delta[delta > 0].sum(); loss = -delta[delta < 0].sum()
+                rsi = 100 - 100/(1 + (gain/loss)) if loss > 0 else 100
+                ret5  = (cur - hist.iloc[-6]) / hist.iloc[-6] * 100 if len(hist) > 5 else 0
+                ret20 = (cur - hist.iloc[-21]) / hist.iloc[-21] * 100 if len(hist) > 20 else 0
+                sc = 0
+                if ma5 > ma20: sc += 15
+                else: sc -= 10
+                if cur > ma20: sc += 10
+                if 40 <= rsi <= 70: sc += 10
+                elif rsi > 75: sc -= 15
+                elif rsi < 30: sc += 8
+                if ret5 > 3: sc += 10
+                if ret20 > 8: sc += 12
+                elif ret20 < -10: sc -= 15
+                picks.append((c, sc))
+            picks.sort(key=lambda x: -x[1])
+            return [p[0] for p in picks[:n_positions] if p[1] >= 15]
+
+        if strategy == "golden_cross":
+            # 黃金交叉觸發 (MA5 上穿 MA20 當日)
+            picks = []
+            for c in closes.columns:
+                hist = closes[c].iloc[:day_idx+1].dropna()
+                if len(hist) < 22: continue
+                ma5_t  = hist.iloc[-5:].mean()
+                ma20_t = hist.iloc[-20:].mean()
+                ma5_y  = hist.iloc[-6:-1].mean()
+                ma20_y = hist.iloc[-21:-1].mean()
+                # 昨天 MA5 < MA20,今天 >=
+                if ma5_y < ma20_y and ma5_t >= ma20_t:
+                    picks.append(c)
+            return picks[:n_positions]
+
+        if strategy == "rsi_oversold":
+            # RSI < threshold 且 MA5 > MA20 (多頭中的回調)
+            picks = []
+            thr = float(threshold) if threshold < 50 else 35
+            for c in closes.columns:
+                hist = closes[c].iloc[:day_idx+1].dropna()
+                if len(hist) < 20: continue
+                ma5  = hist.iloc[-5:].mean()
+                ma20 = hist.iloc[-20:].mean()
+                delta = hist.diff().iloc[-14:].dropna()
+                gain = delta[delta > 0].sum(); loss = -delta[delta < 0].sum()
+                rsi = 100 - 100/(1 + (gain/loss)) if loss > 0 else 100
+                if rsi < thr and ma5 >= ma20:
+                    picks.append((c, rsi))
+            picks.sort(key=lambda x: x[1])  # RSI 越低越前
+            return [p[0] for p in picks[:n_positions]]
+
+        if strategy == "new_high":
+            # 創 60d 新高 + 量能 >= 1.3x 20d avg
+            picks = []
+            if day_idx < 60: return []
+            for c in closes.columns:
+                hist = closes[c].iloc[:day_idx+1].dropna()
+                if len(hist) < 61: continue
+                cur = hist.iloc[-1]
+                prev60 = hist.iloc[-61:-1].max()
+                if cur >= prev60 * 0.999:
+                    picks.append((c, cur / prev60 - 1))
+            picks.sort(key=lambda x: -x[1])
+            return [p[0] for p in picks[:n_positions]]
+
+        if strategy == "rs_rotation":
+            # 每月初(每 21 個交易日)重新調倉,買近 20d 漲幅最強族群前 2 檔
+            # 簡化：每天都檢查,但只在「離上次調倉 >= 20 個交易日」時返回新選股
+            # 持有 hold_days 自動會處理
+            if day_idx < 21: return []
+            picks_by_group = {}
+            for c in closes.columns:
+                hist = closes[c].iloc[:day_idx+1].dropna()
+                if len(hist) < 21: continue
+                ret20 = (hist.iloc[-1] - hist.iloc[-21]) / hist.iloc[-21] * 100
+                g = wl.get(c, {}).get("group", "其他")
+                picks_by_group.setdefault(g, []).append((c, ret20))
+            # 找最強族群
+            grp_avg = {g: sum(r for _, r in lst)/len(lst) for g, lst in picks_by_group.items() if lst}
+            if not grp_avg: return []
+            best_g = max(grp_avg, key=grp_avg.get)
+            # 該族群內最強前 2
+            best_in_g = sorted(picks_by_group[best_g], key=lambda x: -x[1])[:2]
+            return [c for c, _ in best_in_g]
+
+        if strategy == "earnings_drift":
+            # 簡化:近 90 日漲 > 10% (動能持續) 且最近 5 日漲幅前 N
+            # 真實版需要 earnings calendar 配合,這裡用代理:強勢股短線動能
+            if day_idx < 90: return []
+            picks = []
+            for c in closes.columns:
+                hist = closes[c].iloc[:day_idx+1].dropna()
+                if len(hist) < 91: continue
+                ret90 = (hist.iloc[-1] - hist.iloc[-91]) / hist.iloc[-91] * 100
+                ret5  = (hist.iloc[-1] - hist.iloc[-6]) / hist.iloc[-6] * 100 if len(hist) > 5 else 0
+                if ret90 >= 10:
+                    picks.append((c, ret5))
+            picks.sort(key=lambda x: -x[1])
+            return [p[0] for p in picks[:n_positions]]
+
         return []
 
     initial   = capital
@@ -2673,6 +2808,222 @@ def api_backtest(
         "equity_curve": ec_ds,
         "trades": trades[-100:],
     }
+
+
+# ============================================================================
+# 市場寬度 (Breadth)
+# ============================================================================
+@app.get("/api/breadth")
+def api_breadth():
+    """市場寬度：watchlist 多少%在 MA50/MA200 上、A/D、SPY vs RSP 等權重比較。"""
+    cache_key = "breadth"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    wl = load_watchlist()
+    above_50 = above_200 = 0
+    advancers = decliners = 0
+    total = 0
+    bull_trend = bear_trend = 0
+    for code in wl:
+        try:
+            d = fetch_stock(code)
+        except Exception:
+            continue
+        total += 1
+        price = d["price"]
+        ma20  = d.get("ma20") or 0
+        ma60  = d.get("ma60") or 0
+        prev  = d.get("prev") or 0
+        # 用 ma20/ma60 當近似 (沒有 50/200 日均線)
+        if ma20 and price > ma20: above_50  += 1
+        if ma60 and price > ma60: above_200 += 1
+        if prev:
+            if price > prev: advancers += 1
+            elif price < prev: decliners += 1
+        if "多頭" in d.get("trend", ""): bull_trend += 1
+        elif "空頭" in d.get("trend", ""): bear_trend += 1
+
+    pct_50  = round(above_50  / total * 100, 1) if total else 0
+    pct_200 = round(above_200 / total * 100, 1) if total else 0
+    ad_ratio = round(advancers / decliners, 2) if decliners else (advancers if advancers else 0)
+
+    # SPY vs RSP 等權重 (寬度近似)
+    spy_rsp = None
+    spy_chg = rsp_chg = None
+    try:
+        end = pd.Timestamp.today()
+        start = end - pd.Timedelta(days=10)
+        sp_data = yf.download(["SPY", "RSP"], start=start, end=end, auto_adjust=False, progress=False, group_by="ticker", threads=True)
+        spy_c = sp_data["SPY"]["Close"]
+        rsp_c = sp_data["RSP"]["Close"]
+        if len(spy_c) >= 2 and len(rsp_c) >= 2:
+            spy_chg = float((spy_c.iloc[-1] - spy_c.iloc[-2]) / spy_c.iloc[-2] * 100)
+            rsp_chg = float((rsp_c.iloc[-1] - rsp_c.iloc[-2]) / rsp_c.iloc[-2] * 100)
+            spy_rsp = round(spy_chg - rsp_chg, 2)  # 正 = 龍頭股拉,負 = 中小盤拉
+    except Exception as e:
+        print(f"[breadth spy/rsp] {e}")
+
+    # 健康度結論
+    status = "neutral"
+    note = ""
+    if pct_50 >= 70 and pct_200 >= 60:
+        status = "strong"; note = "多頭格局明確"
+    elif pct_50 >= 50 and pct_200 >= 50:
+        status = "healthy"; note = "偏多但留意過熱"
+    elif pct_50 < 40 and pct_200 < 40:
+        status = "weak"; note = "短中線都失守,警戒"
+    elif pct_200 < 50 and pct_50 > 60:
+        status = "divergence"; note = "短線拉、中線弱,假反彈警惕"
+
+    out = {
+        "total":        total,
+        "pct_above_50":  pct_50,
+        "pct_above_200": pct_200,
+        "advancers":    advancers,
+        "decliners":    decliners,
+        "unchanged":    total - advancers - decliners,
+        "ad_ratio":     ad_ratio,
+        "bull_trend":   bull_trend,
+        "bear_trend":   bear_trend,
+        "spy_change":   round(spy_chg, 2) if spy_chg is not None else None,
+        "rsp_change":   round(rsp_chg, 2) if rsp_chg is not None else None,
+        "spy_vs_rsp":   spy_rsp,
+        "status":       status,
+        "note":         note,
+    }
+    cache_set(cache_key, out)
+    return out
+
+
+# ============================================================================
+# 52 週新高 / 新低掃描
+# ============================================================================
+@app.get("/api/52w-scan")
+def api_52w_scan():
+    """掃描 watchlist 創 52 週新高/新低的個股。"""
+    cache_key = "52w_scan"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    wl = load_watchlist()
+    end = pd.Timestamp.today()
+    start = end - pd.Timedelta(days=400)
+    yf_codes = [wl[c]["yf"] for c in wl]
+    codes = list(wl.keys())
+    new_highs = []
+    new_lows = []
+    near_highs = []  # 接近新高 (3% 內)
+    try:
+        data = yf.download(yf_codes, start=start, end=end, auto_adjust=False,
+                           progress=False, group_by="ticker", threads=True)
+    except Exception as e:
+        raise HTTPException(503, f"yfinance batch fail: {e}")
+
+    for code, yfc in zip(codes, yf_codes):
+        try:
+            df = data[yfc] if len(yf_codes) > 1 else data
+            close = df["Close"].dropna()
+            vol   = df["Volume"].dropna()
+            if len(close) < 252:
+                continue
+            year = close.iloc[-252:]
+            cur = float(close.iloc[-1])
+            prev = float(close.iloc[-2]) if len(close) >= 2 else cur
+            year_high = float(year.max())
+            year_low  = float(year.min())
+            cur_vol = float(vol.iloc[-1]) if len(vol) else 0
+            avg_vol_20 = float(vol.iloc[-20:].mean()) if len(vol) >= 20 else 0
+            vol_ratio = round(cur_vol / avg_vol_20, 2) if avg_vol_20 else 0
+            chg_pct = round((cur - prev) / prev * 100, 2) if prev else 0
+            info = wl.get(code, {})
+            base = {
+                "code":      code,
+                "name":      info.get("name", code),
+                "group":     info.get("group", "—"),
+                "price":     round(cur, 2),
+                "year_high": round(year_high, 2),
+                "year_low":  round(year_low, 2),
+                "vol_ratio": vol_ratio,
+                "change_pct": chg_pct,
+            }
+            if cur >= year_high * 0.999:
+                new_highs.append({**base, "type": "new_high"})
+            elif cur <= year_low * 1.001:
+                new_lows.append({**base, "type": "new_low"})
+            elif cur >= year_high * 0.97:
+                base["pct_from_high"] = round((cur - year_high) / year_high * 100, 2)
+                near_highs.append({**base, "type": "near_high"})
+        except Exception:
+            continue
+
+    new_highs.sort(key=lambda x: -x["vol_ratio"])
+    near_highs.sort(key=lambda x: -(x.get("pct_from_high") or -999))
+    out = {
+        "new_highs":  new_highs,
+        "new_lows":   new_lows,
+        "near_highs": near_highs[:10],
+        "as_of":      str(end.date()),
+    }
+    cache_set(cache_key, out)
+    return out
+
+
+# ============================================================================
+# Insider Cluster Buying — 跨檔群聚買進偵測
+# ============================================================================
+@app.get("/api/insider-cluster")
+def api_insider_cluster(days: int = 30):
+    """偵測 N 天內多個 insider 集中買進的股票。"""
+    cache_key = f"insider_cluster:{days}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    wl = load_watchlist()
+    out = []
+    for code in wl:
+        try:
+            r = fetch_insider(code, days=days)
+        except Exception:
+            continue
+        s = r.get("summary", {})
+        buys = [t for t in r.get("transactions", []) if t.get("action") == "buy"]
+        # 不同 insider 的人數
+        buyers = set(t.get("insider") for t in buys if t.get("insider"))
+        n_buyers = len(buyers)
+        buy_count = len(buys)
+        buy_value = s.get("buy_value", 0) or 0
+        # 評分：人數 >= 2 + 總額大 = 群聚訊號
+        if n_buyers < 2 or buy_value < 100000:
+            continue
+        score = 0
+        if n_buyers >= 5: score += 40
+        elif n_buyers >= 3: score += 25
+        elif n_buyers >= 2: score += 15
+        if buy_value >= 5_000_000: score += 30
+        elif buy_value >= 1_000_000: score += 20
+        elif buy_value >= 500_000: score += 10
+        # 淨流入 (買 - 賣) 為正再加分
+        net = s.get("net_value", 0) or 0
+        if net > 0: score += 10
+        info = wl.get(code, {})
+        out.append({
+            "code":       code,
+            "name":       info.get("name", code),
+            "group":      info.get("group", "—"),
+            "n_buyers":   n_buyers,
+            "buy_count":  buy_count,
+            "buy_value":  buy_value,
+            "net_value":  net,
+            "top_buyers": list(buyers)[:5],
+            "score":      score,
+        })
+    out.sort(key=lambda x: -x["score"])
+    cache_set(cache_key, out)
+    return out
 
 
 # ============================================================================

@@ -124,6 +124,37 @@
   .squeeze-view { display: none; }
   .squeeze-view.show { display: block; }
 
+  /* ===== 52w View ===== */
+  .hilo-view { display: none; }
+  .hilo-view.show { display: block; }
+  .hilo-section { margin-bottom: 18px; }
+  .hilo-section h3 { font-size: 13px; margin-bottom: 8px; letter-spacing: 1px; }
+  .hilo-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 10px;
+  }
+  .hilo-card {
+    background: var(--bg-1); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 14px; cursor: pointer; transition: border-color 0.2s;
+  }
+  .hilo-card:hover { border-color: var(--cyan); }
+  .hilo-card.high { border-left: 3px solid var(--green); }
+  .hilo-card.low  { border-left: 3px solid var(--red); }
+  .hilo-card.near { border-left: 3px solid var(--orange); }
+  .hilo-card .code { font-family: "SF Mono", Consolas, monospace; color: var(--yellow); font-size: 13px; font-weight: 700; }
+  .hilo-card .name { color: var(--muted); font-size: 11px; }
+  .hilo-card .row {
+    display: flex; justify-content: space-between; font-size: 11px;
+    color: var(--muted); margin-top: 4px;
+  }
+  .hilo-card .val { font-variant-numeric: tabular-nums; color: var(--text); }
+
+  /* ===== Cluster View ===== */
+  .cluster-view { display: none; }
+  .cluster-view.show { display: block; }
+
+  /* ===== Risk View ===== */
+
   /* ===== Risk View ===== */
   .risk-view { display: none; }
   .risk-view.show { display: block; }
@@ -899,6 +930,14 @@
     </div>
   </div>
 
+  <!-- ===== Breadth Strip ===== -->
+  <div class="macro-strip" id="breadthStrip">
+    <div class="macro-label">📐 市場寬度</div>
+    <div class="macro-cells" id="breadthCells">
+      <div class="macro-cell loading">⏳ 載入中…</div>
+    </div>
+  </div>
+
   <!-- ===== Toolbar (groups + add + telegram + view) ===== -->
   <div class="toolbar">
     <div class="group-chips" id="groupChips"></div>
@@ -915,6 +954,8 @@
       <div class="opt" data-view="earn">📅 財報日曆</div>
       <div class="opt" data-view="squeeze">🔥 軋空</div>
       <div class="opt" data-view="risk">⚖️ 風險</div>
+      <div class="opt" data-view="hilo">🎯 52週</div>
+      <div class="opt" data-view="cluster">🐳 群聚</div>
       <div class="opt" data-view="bt">📈 回測</div>
     </div>
   </div>
@@ -1447,6 +1488,38 @@
     </div>
   </div>
 
+  <!-- ===== 52-WEEK SCAN VIEW ===== -->
+  <div class="hilo-view" id="hiloView">
+    <div class="rank-controls">
+      <span style="color:var(--green); font-weight:700; letter-spacing:2px;">🎯 52 週新高 / 新低掃描</span>
+      <span class="spacer" style="flex:0 0 12px;"></span>
+      <span style="font-size:12px; color:var(--muted);">建立 / 跌破 / 接近新高 — 量能 ≥ 1.3x 平均更具動能</span>
+    </div>
+    <div id="hiloContent">
+      <div style="color:var(--muted);text-align:center;padding:40px;">⏳ 載入中…</div>
+    </div>
+  </div>
+
+  <!-- ===== INSIDER CLUSTER VIEW ===== -->
+  <div class="cluster-view" id="clusterView">
+    <div class="rank-controls">
+      <span style="color:var(--gold); font-weight:700; letter-spacing:2px;">🐳 內部人群聚買進偵測</span>
+      <span class="spacer" style="flex:0 0 12px;"></span>
+      <label style="font-size:12px; color:var(--muted);">期間</label>
+      <select id="clusterDays" style="padding:5px 10px; background:var(--bg-2); color:var(--text); border:1px solid var(--line); border-radius:8px; font-size:12px;">
+        <option value="14">14 天</option>
+        <option value="30" selected>30 天</option>
+        <option value="60">60 天</option>
+        <option value="90">90 天</option>
+      </select>
+      <span class="spacer"></span>
+      <span style="font-size:12px; color:var(--muted);" id="clusterCount">—</span>
+    </div>
+    <div id="clusterContent">
+      <div style="color:var(--muted);text-align:center;padding:40px;">⏳ 載入中…</div>
+    </div>
+  </div>
+
   <!-- ===== PORTFOLIO RISK VIEW ===== -->
   <div class="risk-view" id="riskView">
     <div class="rank-controls">
@@ -1493,6 +1566,12 @@
         <option value="win_rate">短線勝率 ≥ N% 的股</option>
         <option value="group">都買指定族群</option>
         <option value="hot_group">都買當日最熱族群</option>
+        <option value="score">🎯 多因子綜合評分 top N</option>
+        <option value="golden_cross">🌟 黃金交叉進場</option>
+        <option value="rsi_oversold">❄️ RSI 超賣反彈 (&lt; N)</option>
+        <option value="new_high">🚀 60日新高突破 + 量爆</option>
+        <option value="rs_rotation">📊 RS Rotation (最強族群 top 2)</option>
+        <option value="earnings_drift">📅 強勢動能 (Earnings drift 代理)</option>
       </select>
 
       <label style="font-size:12px; color:var(--muted);">族群</label>
@@ -1727,6 +1806,9 @@
     <label>🎯 訊號爆發（同時 N 個以上）</label>
     <input type="number" id="alertSignalBurst" step="1" min="2" max="6" placeholder="例 3 (留空 = 不啟用)">
 
+    <label>🩸 Drawdown 警示（從近 60d 高點回檔 N%）</label>
+    <input type="number" id="alertDrawdown" step="1" min="3" max="50" placeholder="例 8 = 從高點跌 8%">
+
     <div id="alertHint" class="hint" style="margin-top:8px;"></div>
 
     <div class="actions">
@@ -1847,7 +1929,9 @@ async function boot() {
   tickTime();
   setInterval(tickTime, 60000);
   loadMacro();
-  setInterval(loadMacro, 300000);  // 總經 5 分鐘更新一次
+  loadBreadth();
+  setInterval(loadMacro,   300000);  // 總經 5 分鐘更新一次
+  setInterval(loadBreadth, 300000);
 
   // 5 分鐘自動刷新
   setInterval(async () => {
@@ -1976,6 +2060,8 @@ function switchView(v) {
   document.getElementById("earnView").classList.toggle("show", v === "earn");
   document.getElementById("squeezeView").classList.toggle("show", v === "squeeze");
   document.getElementById("riskView").classList.toggle("show", v === "risk");
+  document.getElementById("hiloView").classList.toggle("show", v === "hilo");
+  document.getElementById("clusterView").classList.toggle("show", v === "cluster");
   document.getElementById("btView").classList.toggle("show", v === "bt");
 
   if (v === "rank")         loadRanking();
@@ -1984,8 +2070,158 @@ function switchView(v) {
   else if (v === "earn")    loadEarnings();
   else if (v === "squeeze") loadSqueeze();
   else if (v === "risk")    loadRisk();
+  else if (v === "hilo")    loadHiLo();
+  else if (v === "cluster") loadCluster();
   else if (v === "bt")      initBtView();
   else if (state.activeCode) loadStock(state.activeCode);
+}
+
+/* =========================================================================
+ * Breadth Strip
+ * ======================================================================= */
+async function loadBreadth() {
+  const el = document.getElementById("breadthCells");
+  try {
+    const b = await apiGet("/api/breadth", 60000);
+    const cls50  = b.pct_above_50  >= 70 ? "calm" : b.pct_above_50  >= 50 ? "" : b.pct_above_50  < 30 ? "danger" : "low";
+    const cls200 = b.pct_above_200 >= 60 ? "calm" : b.pct_above_200 >= 40 ? "" : "danger";
+    const ad = b.ad_ratio;
+    const adCls = ad >= 2 ? "calm" : ad >= 1 ? "" : "danger";
+    const statusIcons = {strong:"🟢", healthy:"🟢", neutral:"⚪", divergence:"🟠", weak:"🔴"};
+    const ic = statusIcons[b.status] || "⚪";
+    const spyVsRsp = b.spy_vs_rsp;
+    const svrCls = spyVsRsp == null ? "" : spyVsRsp > 0.5 ? "high" : spyVsRsp < -0.5 ? "low" : "";
+    el.innerHTML = `
+      <div class="macro-cell ${cls50}" title="watchlist 中股價 > 20 日均線的%">
+        <span class="ml-label">${ic} > 20DMA</span>
+        <span class="ml-value">${b.pct_above_50}%</span>
+        <span class="ml-chg neu">${b.advancers}↑ / ${b.decliners}↓ (今日)</span>
+      </div>
+      <div class="macro-cell ${cls200}" title="watchlist 中股價 > 60 日均線的%">
+        <span class="ml-label">📊 > 60DMA</span>
+        <span class="ml-value">${b.pct_above_200}%</span>
+        <span class="ml-chg neu">${b.bull_trend} 多 / ${b.bear_trend} 空 趨勢</span>
+      </div>
+      <div class="macro-cell ${adCls}" title="advancers / decliners">
+        <span class="ml-label">⚖️ A/D</span>
+        <span class="ml-value">${ad}</span>
+        <span class="ml-chg neu">${b.note || '—'}</span>
+      </div>
+      ${spyVsRsp != null ? `
+      <div class="macro-cell ${svrCls}" title="SPY 漲跌 - RSP 漲跌. 正 = 龍頭股拉,負 = 中小盤拉">
+        <span class="ml-label">🐋 SPY - RSP</span>
+        <span class="ml-value">${spyVsRsp >= 0 ? '+' : ''}${spyVsRsp}%</span>
+        <span class="ml-chg neu">SPY ${b.spy_change >= 0 ? '+' : ''}${b.spy_change}% · RSP ${b.rsp_change >= 0 ? '+' : ''}${b.rsp_change}%</span>
+      </div>` : ''}
+    `;
+  } catch (e) {
+    el.innerHTML = `<div class="macro-cell loading" style="color:var(--red);">⚠️ ${e.message}</div>`;
+  }
+}
+
+/* =========================================================================
+ * 52-Week Scanner
+ * ======================================================================= */
+async function loadHiLo() {
+  const el = document.getElementById("hiloContent");
+  el.innerHTML = `<div style="color:var(--muted);text-align:center;padding:40px;">⏳ 載入中 (首次抓 400 日歷史約 20-40 秒)…</div>`;
+  try {
+    const d = await apiGet("/api/52w-scan", 90000);
+    const card = (r, cls) => `
+      <div class="hilo-card ${cls}" data-code="${r.code}">
+        <div class="code">${r.code}</div>
+        <div class="name">${r.name} · ${r.group}</div>
+        <div class="row"><span>現價</span><span class="val">$${r.price}</span></div>
+        ${r.pct_from_high != null ? `<div class="row"><span>距高點</span><span class="val" style="color:var(--orange);">${r.pct_from_high}%</span></div>` : ''}
+        <div class="row"><span>今日</span><span class="val" style="color:${r.change_pct >= 0 ? 'var(--red)' : 'var(--green)'};">${r.change_pct >= 0 ? '+' : ''}${r.change_pct}%</span></div>
+        <div class="row"><span>量比</span><span class="val" style="color:${r.vol_ratio >= 1.5 ? 'var(--red)' : r.vol_ratio >= 1.2 ? 'var(--orange)' : 'var(--muted)'};">${r.vol_ratio}x</span></div>
+        <div class="row"><span>52W</span><span class="val">$${r.year_low} - $${r.year_high}</span></div>
+      </div>`;
+    const hi  = (d.new_highs  || []).map(r => card(r, "high")).join("");
+    const lo  = (d.new_lows   || []).map(r => card(r, "low")).join("");
+    const nr  = (d.near_highs || []).map(r => card(r, "near")).join("");
+    el.innerHTML = `
+      <div class="hilo-section">
+        <h3 style="color:var(--green);">📈 創 52 週新高 (${(d.new_highs || []).length} 檔)</h3>
+        <div class="hilo-grid">${hi || '<div style="color:var(--muted);">無</div>'}</div>
+      </div>
+      <div class="hilo-section">
+        <h3 style="color:var(--orange);">🎯 接近新高 (3% 內,${(d.near_highs || []).length} 檔)</h3>
+        <div class="hilo-grid">${nr || '<div style="color:var(--muted);">無</div>'}</div>
+      </div>
+      <div class="hilo-section">
+        <h3 style="color:var(--red);">📉 創 52 週新低 (${(d.new_lows || []).length} 檔)</h3>
+        <div class="hilo-grid">${lo || '<div style="color:var(--muted);">無</div>'}</div>
+      </div>
+    `;
+    el.querySelectorAll(".hilo-card").forEach(c => {
+      c.addEventListener("click", () => {
+        state.activeCode = c.dataset.code;
+        switchView("stock");
+        loadStock(state.activeCode);
+      });
+    });
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red);text-align:center;padding:40px;">⚠️ ${e.message}</div>`;
+  }
+}
+
+/* =========================================================================
+ * Insider Cluster
+ * ======================================================================= */
+async function loadCluster() {
+  const days = document.getElementById("clusterDays").value || 30;
+  const el = document.getElementById("clusterContent");
+  const cnt = document.getElementById("clusterCount");
+  el.innerHTML = `<div style="color:var(--muted);text-align:center;padding:40px;">⏳ 載入中 (掃描 watchlist insider 交易)…</div>`;
+  cnt.textContent = "—";
+  try {
+    const data = await apiGet(`/api/insider-cluster?days=${days}`, 120000);
+    cnt.textContent = `${data.length} 檔`;
+    if (!data || data.length === 0) {
+      el.innerHTML = `<div style="color:var(--muted);text-align:center;padding:40px;">📭 無群聚買進訊號</div>`;
+      return;
+    }
+    el.innerHTML = `
+      <div style="overflow-x:auto;">
+        <table class="rank-table">
+          <thead>
+            <tr>
+              <th>排名</th><th>分數</th><th>代號 / 名稱</th><th>族群</th>
+              <th>買家人數</th><th>買進筆數</th><th>買進金額</th><th>淨值</th><th>主要買家</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.map((r, i) => {
+              const rankCls = i === 0 ? "gold" : i === 1 ? "silver" : i === 2 ? "bronze" : "normal";
+              const scCol = r.score >= 60 ? "var(--red)" : r.score >= 35 ? "var(--orange)" : "var(--cyan)";
+              const buyersStr = (r.top_buyers || []).slice(0, 3).join(", ");
+              return `
+                <tr data-code="${r.code}" style="cursor:pointer;">
+                  <td><span class="rank-num ${rankCls}">${i+1}</span></td>
+                  <td style="font-size:18px;font-weight:800;color:${scCol};">${r.score}</td>
+                  <td><strong style="color:var(--yellow);">${r.code}</strong><br><span style="font-size:11px;color:var(--muted);">${r.name}</span></td>
+                  <td style="font-size:11px;color:var(--muted);">${r.group}</td>
+                  <td style="font-weight:700;color:var(--gold);">${r.n_buyers} 人</td>
+                  <td>${r.buy_count}</td>
+                  <td style="color:var(--red);">$${(r.buy_value / 1e6).toFixed(2)}M</td>
+                  <td style="color:${r.net_value >= 0 ? 'var(--red)' : 'var(--green)'};">${r.net_value >= 0 ? '+' : ''}$${(r.net_value / 1e6).toFixed(2)}M</td>
+                  <td style="font-size:11px;color:var(--muted);max-width:300px;">${buyersStr}</td>
+                </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>`;
+    el.querySelectorAll("tr[data-code]").forEach(tr => {
+      tr.addEventListener("click", () => {
+        state.activeCode = tr.dataset.code;
+        switchView("stock");
+        loadStock(state.activeCode);
+      });
+    });
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red);text-align:center;padding:40px;">⚠️ ${e.message}</div>`;
+  }
 }
 
 /* =========================================================================
@@ -2863,6 +3099,7 @@ function bindToolbar() {
   document.getElementById("btnBtRun").addEventListener("click", runBacktest);
   document.getElementById("btnLoadOpt")?.addEventListener("click", loadOptions);
   document.getElementById("earnDays")?.addEventListener("change", loadEarnings);
+  document.getElementById("clusterDays")?.addEventListener("change", loadCluster);
 
   // TWII toggle
   document.getElementById("twiiToggle").addEventListener("click", () => {
@@ -3020,6 +3257,7 @@ const _ALERT_FIELDS = [
   ["alertBreakout",    "on_breakout",     "bool"],
   ["alertBreakdown",   "on_breakdown",    "bool"],
   ["alertSignalBurst", "on_signal_burst", "num"],
+  ["alertDrawdown",    "drawdown_pct",    "num"],
 ];
 
 async function openAlertModal() {
@@ -3051,6 +3289,7 @@ async function openAlertModal() {
       if (cur.rsi_below != null) summary.push(`RSI≤${cur.rsi_below}`);
       if (cur.on_golden_cross) summary.push("黃金交叉");
       if (cur.on_signal_burst) summary.push(`訊號≥${cur.on_signal_burst}`);
+      if (cur.drawdown_pct != null) summary.push(`回檔≥${cur.drawdown_pct}%`);
       document.getElementById("alertHint").innerHTML = `現有警示：${summary.join(" · ") || "無"}`;
     }
     const tg = await apiGet("/api/telegram");
@@ -3838,9 +4077,12 @@ function initBtView() {
     const v = stratEl.value;
     const groupLbl = document.querySelector('label[for="btGroup"]');
     document.getElementById("btGroup").style.display = (v === "group") ? "" : "none";
-    document.getElementById("btThreshold").style.display = (v === "win_rate") ? "" : "none";
-    document.getElementById("btThLabel").textContent = (v === "win_rate") ? "勝率 ≥" : "—";
-    document.getElementById("btThLabel").style.opacity = (v === "win_rate") ? "1" : "0.3";
+    const hasThreshold = (v === "win_rate" || v === "rsi_oversold");
+    document.getElementById("btThreshold").style.display = hasThreshold ? "" : "none";
+    document.getElementById("btThLabel").style.opacity = hasThreshold ? "1" : "0.3";
+    if (v === "win_rate")          document.getElementById("btThLabel").textContent = "勝率 ≥";
+    else if (v === "rsi_oversold") document.getElementById("btThLabel").textContent = "RSI <";
+    else                           document.getElementById("btThLabel").textContent = "—";
   }
   stratEl.onchange = updateVisibility;
   updateVisibility();
