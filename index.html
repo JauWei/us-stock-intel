@@ -89,6 +89,98 @@
   .ticker-track:hover { animation-play-state: paused; }
   .ticker-item { font-size: 14px; }
   .ticker-item .name { color: var(--muted); margin-right: 6px; }
+
+  /* ===== Macro Strip ===== */
+  .macro-strip {
+    border: 1px solid var(--line); border-radius: 12px; background: var(--bg-1);
+    padding: 8px 14px; margin-bottom: 16px;
+    display: flex; gap: 18px; align-items: center; flex-wrap: wrap;
+  }
+  .macro-label {
+    font-size: 12px; color: var(--cyan); font-weight: 700; letter-spacing: 2px;
+    border-right: 1px solid var(--line); padding-right: 18px;
+  }
+  .macro-cells { display: flex; gap: 14px; flex-wrap: wrap; flex: 1; }
+  .macro-cell {
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 4px 12px; border-radius: 8px;
+    min-width: 130px; font-size: 12px;
+    background: var(--bg-2); border: 1px solid var(--line);
+  }
+  .macro-cell.danger  { border-color: var(--red);    background: rgba(255,90,118,0.08); }
+  .macro-cell.calm    { border-color: var(--green);  background: rgba(56,224,123,0.08); }
+  .macro-cell.high    { border-color: var(--orange); background: rgba(255,165,0,0.08); }
+  .macro-cell.low     { border-color: var(--cyan);   background: rgba(0,229,255,0.08); }
+  .macro-cell.strong  { border-color: var(--orange); background: rgba(255,165,0,0.08); }
+  .macro-cell.weak    { border-color: var(--cyan);   background: rgba(0,229,255,0.08); }
+  .macro-cell .ml-label { font-size: 10px; color: var(--muted); letter-spacing: 1px; }
+  .macro-cell .ml-value {
+    font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums;
+  }
+  .macro-cell .ml-chg { font-size: 11px; font-variant-numeric: tabular-nums; }
+  .macro-cell.loading { color: var(--muted); justify-content: center; align-items: center; }
+
+  /* ===== Earnings Calendar View ===== */
+  .earnings-view { display: none; }
+  .earnings-view.show { display: block; }
+  .earn-list { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 14px; }
+  .earn-row {
+    display: grid; grid-template-columns: 90px 80px 1fr 1fr; gap: 14px;
+    align-items: center; padding: 12px 14px;
+    border: 1px solid var(--line); border-radius: 10px;
+    background: var(--bg-1);
+  }
+  .earn-row .days {
+    text-align: center; font-size: 24px; font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+  .earn-row .days.urgent { color: var(--red); }
+  .earn-row .days.soon   { color: var(--orange); }
+  .earn-row .days.future { color: var(--cyan); }
+  .earn-row .days.past   { color: var(--muted); }
+  .earn-row .days .sub { display: block; font-size: 10px; color: var(--muted); font-weight: 400; }
+  .earn-row .stock-info .code { font-family: "SF Mono", Consolas, monospace; color: var(--cyan); font-size: 13px; }
+  .earn-row .stock-info .name { color: var(--muted); font-size: 12px; }
+  .earn-row .date-info { font-size: 13px; }
+  .earn-row .date-info .date { font-weight: 600; }
+  .earn-row .date-info .sub { color: var(--muted); font-size: 11px; }
+  .earn-row .hist-row {
+    display: flex; gap: 4px; flex-wrap: wrap; font-size: 11px;
+  }
+  .earn-row .hist-chip {
+    display: inline-flex; flex-direction: column; align-items: center;
+    padding: 4px 8px; border-radius: 6px; background: var(--bg-2);
+    border: 1px solid var(--line); min-width: 56px;
+  }
+  .earn-row .hist-chip.beat { border-color: var(--green); }
+  .earn-row .hist-chip.miss { border-color: var(--red); }
+  .earn-row .hist-chip .d { font-size: 9px; color: var(--muted); }
+  .earn-row .hist-chip .v { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .earn-row .hist-chip.beat .v { color: var(--green); }
+  .earn-row .hist-chip.miss .v { color: var(--red); }
+
+  /* ===== Options Panel ===== */
+  .opt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .opt-cell {
+    padding: 10px 12px; border-radius: 8px;
+    background: var(--bg-2); border: 1px solid var(--line);
+  }
+  .opt-cell .lbl { font-size: 10px; color: var(--muted); letter-spacing: 1px; }
+  .opt-cell .val {
+    font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums;
+    margin-top: 2px;
+  }
+  .opt-cell .sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .opt-cell.bullish { border-color: var(--green); }
+  .opt-cell.bearish { border-color: var(--red); }
+  .opt-unusual-row {
+    display: grid; grid-template-columns: 50px 80px 80px 80px 80px;
+    gap: 8px; padding: 6px 10px; font-size: 11px;
+    border-bottom: 1px solid rgba(42,42,74,0.4);
+    font-variant-numeric: tabular-nums;
+  }
+  .opt-unusual-row .side-call { color: var(--green); }
+  .opt-unusual-row .side-put { color: var(--red); }
   @keyframes scroll {
     0% { transform: translateX(0); }
     100% { transform: translateX(-50%); }
@@ -715,6 +807,14 @@
     <div class="ticker-track" id="ticker"></div>
   </div>
 
+  <!-- ===== Macro Strip ===== -->
+  <div class="macro-strip" id="macroStrip">
+    <div class="macro-label">🌍 總經背景</div>
+    <div class="macro-cells" id="macroCells">
+      <div class="macro-cell loading">⏳ 載入中…</div>
+    </div>
+  </div>
+
   <!-- ===== Toolbar (groups + add + telegram + view) ===== -->
   <div class="toolbar">
     <div class="group-chips" id="groupChips"></div>
@@ -728,6 +828,7 @@
       <div class="opt" data-view="rank">🔥 熱度榜</div>
       <div class="opt" data-view="heat">🌡 族群熱度</div>
       <div class="opt" data-view="pf">💼 我的持股</div>
+      <div class="opt" data-view="earn">📅 財報日曆</div>
       <div class="opt" data-view="bt">📈 回測</div>
     </div>
   </div>
@@ -1102,6 +1203,26 @@
     <div id="valnNote" style="font-size:11px; color:var(--muted); margin-top:8px;"></div>
   </div>
 
+  <!-- ===== Options Sentiment ===== -->
+  <div class="panel" style="margin-bottom:16px;">
+    <div class="panel-title">
+      <span class="dot" style="background:var(--orange); box-shadow:0 0 10px var(--orange);"></span>
+      🎲 選擇權情緒
+      <span class="small">近月 · P/C 比 · 平均 IV · Max Pain · 異常成交</span>
+    </div>
+    <div id="optGrid" class="opt-grid">
+      <div class="opt-cell loading" style="grid-column:1/-1;color:var(--muted);text-align:center;">📡 點下方按鈕載入</div>
+    </div>
+    <div id="optUnusualBox" style="display:none;">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;letter-spacing:1px;">⚡ 異常成交 (vol > 3x OI)</div>
+      <div class="opt-unusual-row" style="border-bottom:1px solid var(--line);font-weight:600;color:var(--muted);">
+        <span>方向</span><span>履約</span><span>成交</span><span>OI</span><span>IV</span>
+      </div>
+      <div id="optUnusualList"></div>
+    </div>
+    <button class="btn" id="btnLoadOpt" style="margin-top:10px;">🎲 載入選擇權資料</button>
+  </div>
+
   <!-- ===== News ===== -->
   <div class="panel" style="margin-bottom:16px;">
     <div class="panel-title">
@@ -1210,6 +1331,27 @@
         </thead>
         <tbody></tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- ===== EARNINGS CALENDAR VIEW ===== -->
+  <div class="earnings-view" id="earnView">
+    <div class="rank-controls">
+      <span style="color:var(--cyan); font-weight:700; letter-spacing:2px;">📅 財報日曆</span>
+      <span class="spacer" style="flex:0 0 12px;"></span>
+      <label style="font-size:12px; color:var(--muted);">未來</label>
+      <select id="earnDays" style="padding:5px 10px; background:var(--bg-2); color:var(--text); border:1px solid var(--line); border-radius:8px; font-size:12px;">
+        <option value="7">7 天</option>
+        <option value="14">14 天</option>
+        <option value="30" selected>30 天</option>
+        <option value="60">60 天</option>
+        <option value="90">90 天</option>
+      </select>
+      <span class="spacer"></span>
+      <span style="font-size:12px; color:var(--muted);" id="earnCount">—</span>
+    </div>
+    <div class="earn-list" id="earnList">
+      <div style="color:var(--muted);text-align:center;padding:40px;">⏳ 載入中…</div>
     </div>
   </div>
 
@@ -1579,6 +1721,8 @@ async function boot() {
   _bindPfSort();
   tickTime();
   setInterval(tickTime, 60000);
+  loadMacro();
+  setInterval(loadMacro, 300000);  // 總經 5 分鐘更新一次
 
   // 5 分鐘自動刷新
   setInterval(async () => {
@@ -1704,13 +1848,168 @@ function switchView(v) {
   document.getElementById("rankView").classList.toggle("show", v === "rank");
   document.getElementById("heatView").classList.toggle("show", v === "heat");
   document.getElementById("pfView").classList.toggle("show", v === "pf");
+  document.getElementById("earnView").classList.toggle("show", v === "earn");
   document.getElementById("btView").classList.toggle("show", v === "bt");
 
   if (v === "rank")      loadRanking();
   else if (v === "heat") loadHeatmap();
   else if (v === "pf")   loadPortfolio();
+  else if (v === "earn") loadEarnings();
   else if (v === "bt")   initBtView();
   else if (state.activeCode) loadStock(state.activeCode);
+}
+
+/* =========================================================================
+ * Macro Strip
+ * ======================================================================= */
+async function loadMacro() {
+  const el = document.getElementById("macroCells");
+  try {
+    const data = await apiGet("/api/macro", 30000);
+    if (!data || data.length === 0) {
+      el.innerHTML = `<div class="macro-cell loading">無資料</div>`;
+      return;
+    }
+    el.innerHTML = data.map(m => {
+      if (m.value == null) {
+        return `<div class="macro-cell loading"><span class="ml-label">${m.code}</span><span class="ml-value" style="font-size:13px;">—</span></div>`;
+      }
+      const chgCls = m.change > 0 ? "pos" : m.change < 0 ? "neg" : "neu";
+      const arrow  = m.change > 0 ? "▲" : m.change < 0 ? "▼" : "•";
+      const val    = m.value.toFixed(2) + (m.unit || "");
+      const chg    = (m.change >= 0 ? "+" : "") + m.change.toFixed(2) + ` (${m.change_pct >= 0 ? "+" : ""}${m.change_pct.toFixed(2)}%)`;
+      return `
+        <div class="macro-cell ${m.status || ''}" title="${m.label} (${m.yf})">
+          <span class="ml-label">${m.code} · ${m.label}</span>
+          <span class="ml-value">${val}</span>
+          <span class="ml-chg ${chgCls}">${arrow} ${chg}</span>
+        </div>`;
+    }).join("");
+  } catch (e) {
+    el.innerHTML = `<div class="macro-cell loading" style="color:var(--red);">⚠️ ${e.message}</div>`;
+  }
+}
+
+/* =========================================================================
+ * Earnings Calendar
+ * ======================================================================= */
+async function loadEarnings() {
+  const days = document.getElementById("earnDays").value || 30;
+  const el = document.getElementById("earnList");
+  const cnt = document.getElementById("earnCount");
+  el.innerHTML = `<div style="color:var(--muted);text-align:center;padding:40px;">⏳ 載入中…</div>`;
+  cnt.textContent = "—";
+  try {
+    const data = await apiGet(`/api/earnings-calendar?days=${days}`, 60000);
+    if (!data || data.length === 0) {
+      el.innerHTML = `<div style="color:var(--muted);text-align:center;padding:40px;">📭 無財報資料</div>`;
+      return;
+    }
+    cnt.textContent = `${data.length} 檔`;
+    el.innerHTML = data.map(r => {
+      const d = r.days_to;
+      let dCls = "future", dTxt = "—", dSub = "未排定";
+      if (d != null) {
+        if (d < 0)       { dCls = "past";   dTxt = `${d}`;  dSub = "已公布"; }
+        else if (d === 0){ dCls = "urgent"; dTxt = "今天"; dSub = "TODAY"; }
+        else if (d <= 3) { dCls = "urgent"; dTxt = `+${d}`; dSub = "天"; }
+        else if (d <= 7) { dCls = "soon";   dTxt = `+${d}`; dSub = "天"; }
+        else             { dCls = "future"; dTxt = `+${d}`; dSub = "天"; }
+      }
+      const hist = (r.history || []).map(h => {
+        if (h.actual == null && h.estimate == null) return "";
+        const sp = h.surprise_pct;
+        const cls = (sp == null) ? "" : (sp >= 0 ? "beat" : "miss");
+        const date = (h.date || "").slice(5);
+        const spStr = (sp == null) ? "—" : `${sp >= 0 ? "+" : ""}${sp.toFixed(1)}%`;
+        return `<div class="hist-chip ${cls}"><span class="d">${date}</span><span class="v">${spStr}</span></div>`;
+      }).join("");
+      const dateStr = r.earnings_date
+        ? `<div class="date">${r.earnings_date}</div><div class="sub">${(()=>{
+            const dt = new Date(r.earnings_date);
+            return ["日","一","二","三","四","五","六"][dt.getDay()] + " · " + (d != null && d < 0 ? "已過" : "預定");
+          })()}</div>`
+        : `<div class="date" style="color:var(--muted);">未排定</div><div class="sub">— —</div>`;
+      return `
+        <div class="earn-row">
+          <div class="days ${dCls}">${dTxt}<span class="sub">${dSub}</span></div>
+          <div class="stock-info">
+            <div class="code">${r.code}</div>
+            <div class="name">${r.name || ""}</div>
+          </div>
+          <div class="date-info">${dateStr}</div>
+          <div class="hist-row">${hist || '<span style="color:var(--muted);font-size:11px;">無歷史紀錄</span>'}</div>
+        </div>`;
+    }).join("");
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red);text-align:center;padding:40px;">⚠️ ${e.message}</div>`;
+  }
+}
+
+/* =========================================================================
+ * Options Sentiment
+ * ======================================================================= */
+async function loadOptions() {
+  const code = state.activeCode;
+  if (!code) return;
+  const grid = document.getElementById("optGrid");
+  const ubox = document.getElementById("optUnusualBox");
+  grid.innerHTML = `<div class="opt-cell loading" style="grid-column:1/-1;color:var(--muted);text-align:center;">⏳ 載入中…</div>`;
+  ubox.style.display = "none";
+  try {
+    const d = await apiGet(`/api/options/${code}`, 30000);
+    const sent = d.sentiment;
+    const sentLabel = sent === "bullish" ? "🟢 偏多" : sent === "bearish" ? "🔴 偏空" : "⚪ 中性";
+    const pcCls = sent === "bullish" ? "bullish" : sent === "bearish" ? "bearish" : "";
+    const mpDiff = d.max_pain_diff_pct;
+    const mpDiffStr = mpDiff != null
+      ? `<span class="${mpDiff >= 0 ? 'pos' : 'neg'}">${mpDiff >= 0 ? '+' : ''}${mpDiff.toFixed(2)}% vs spot</span>`
+      : "";
+    grid.innerHTML = `
+      <div class="opt-cell ${pcCls}">
+        <div class="lbl">P/C VOL</div>
+        <div class="val">${d.pc_vol != null ? d.pc_vol.toFixed(2) : "—"}</div>
+        <div class="sub">${sentLabel}</div>
+      </div>
+      <div class="opt-cell">
+        <div class="lbl">P/C OI</div>
+        <div class="val">${d.pc_oi != null ? d.pc_oi.toFixed(2) : "—"}</div>
+        <div class="sub">未平倉比</div>
+      </div>
+      <div class="opt-cell">
+        <div class="lbl">CALL VOL / OI</div>
+        <div class="val" style="font-size:13px;">${d.call_vol.toLocaleString()} / ${d.call_oi.toLocaleString()}</div>
+        <div class="sub">IV ${d.call_iv != null ? (d.call_iv*100).toFixed(1)+'%' : '—'}</div>
+      </div>
+      <div class="opt-cell">
+        <div class="lbl">PUT VOL / OI</div>
+        <div class="val" style="font-size:13px;">${d.put_vol.toLocaleString()} / ${d.put_oi.toLocaleString()}</div>
+        <div class="sub">IV ${d.put_iv != null ? (d.put_iv*100).toFixed(1)+'%' : '—'}</div>
+      </div>
+      <div class="opt-cell">
+        <div class="lbl">MAX PAIN</div>
+        <div class="val">${d.max_pain != null ? d.max_pain.toFixed(2) : "—"}</div>
+        <div class="sub">${mpDiffStr}</div>
+      </div>
+      <div class="opt-cell">
+        <div class="lbl">EXPIRY</div>
+        <div class="val" style="font-size:13px;">${d.expiry || "—"}</div>
+        <div class="sub">spot ${d.spot ? d.spot.toFixed(2) : '—'}</div>
+      </div>`;
+    if (d.unusual && d.unusual.length > 0) {
+      ubox.style.display = "block";
+      document.getElementById("optUnusualList").innerHTML = d.unusual.map(u => `
+        <div class="opt-unusual-row">
+          <span class="side-${u.side}">${u.side === 'call' ? '📞 Call' : '📉 Put'}</span>
+          <span>${u.strike.toFixed(2)}</span>
+          <span>${u.vol.toLocaleString()}</span>
+          <span>${u.oi.toLocaleString()}</span>
+          <span>${u.iv != null ? (u.iv*100).toFixed(1)+'%' : '—'}</span>
+        </div>`).join("");
+    }
+  } catch (e) {
+    grid.innerHTML = `<div class="opt-cell loading" style="grid-column:1/-1;color:var(--red);text-align:center;">⚠️ ${e.message}</div>`;
+  }
 }
 
 /* =========================================================================
@@ -2234,6 +2533,8 @@ function bindToolbar() {
   document.getElementById("btnGenAi").addEventListener("click", () => generateAiComment());
   document.getElementById("btnAddHolding").addEventListener("click", () => openModal("holdingModal"));
   document.getElementById("btnBtRun").addEventListener("click", runBacktest);
+  document.getElementById("btnLoadOpt")?.addEventListener("click", loadOptions);
+  document.getElementById("earnDays")?.addEventListener("change", loadEarnings);
 
   // TWII toggle
   document.getElementById("twiiToggle").addEventListener("click", () => {

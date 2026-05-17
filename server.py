@@ -2644,6 +2644,286 @@ def api_backtest(
     }
 
 
+# ============================================================================
+# 財報日曆 + EPS 驚奇紀錄
+# ============================================================================
+@app.get("/api/earnings-calendar")
+def api_earnings_calendar(days: int = 30):
+    """未來 N 天 watchlist 財報日 + 近 4 季 EPS beat/miss。"""
+    cache_key = f"earnings_cal:{days}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    wl = load_watchlist()
+    out = []
+    today = pd.Timestamp.today().normalize()
+    horizon = today + pd.Timedelta(days=days)
+
+    for code, info in wl.items():
+        yf_code = info.get("yf", code)
+        try:
+            t = yf.Ticker(yf_code)
+            # 下次財報日
+            next_date = None
+            try:
+                cal = t.calendar
+                if isinstance(cal, dict):
+                    ed = cal.get("Earnings Date") or cal.get("earnings_date")
+                    if isinstance(ed, list) and ed:
+                        next_date = pd.Timestamp(ed[0])
+                    elif ed:
+                        next_date = pd.Timestamp(ed)
+                elif cal is not None and hasattr(cal, "loc"):
+                    try:
+                        ed = cal.loc["Earnings Date"]
+                        if hasattr(ed, "iloc"):
+                            next_date = pd.Timestamp(ed.iloc[0])
+                        else:
+                            next_date = pd.Timestamp(ed)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # 歷史 EPS 紀錄
+            history = []
+            try:
+                ed = t.earnings_dates
+                if ed is not None and not ed.empty:
+                    past = ed[ed.index.tz_localize(None) < pd.Timestamp.now()].head(4) if ed.index.tz is not None else ed[ed.index < pd.Timestamp.now()].head(4)
+                    for idx, row in past.iterrows():
+                        eps_est  = row.get("EPS Estimate")
+                        eps_act  = row.get("Reported EPS")
+                        surprise = row.get("Surprise(%)")
+                        if pd.isna(eps_act) and pd.isna(eps_est):
+                            continue
+                        history.append({
+                            "date":     str(idx.date()) if hasattr(idx, "date") else str(idx),
+                            "estimate": float(eps_est) if not pd.isna(eps_est) else None,
+                            "actual":   float(eps_act) if not pd.isna(eps_act) else None,
+                            "surprise_pct": float(surprise) if not pd.isna(surprise) else None,
+                        })
+            except Exception:
+                pass
+
+            days_to = None
+            if next_date is not None:
+                try:
+                    nd = next_date.tz_localize(None) if next_date.tz is not None else next_date
+                    days_to = int((nd - today).days)
+                except Exception:
+                    days_to = None
+
+            entry = {
+                "code":         code,
+                "name":         info.get("name", code),
+                "yf":           yf_code,
+                "earnings_date": str(next_date.date()) if next_date is not None else None,
+                "days_to":      days_to,
+                "history":      history,
+            }
+            # 過濾：未來 days 內、或還是想看過去歷史的都保留
+            if days_to is None or 0 <= days_to <= days or len(history) > 0:
+                out.append(entry)
+        except Exception as e:
+            print(f"[earnings] {code}: {e}")
+
+    # 排序：有日期的擺前面 by days_to，無日期的擺後面但有 history
+    def _sort_key(x):
+        d = x.get("days_to")
+        if d is None: return (1, 9999)
+        if d < 0:     return (2, abs(d))  # 已過去的排最後
+        return (0, d)
+    out.sort(key=_sort_key)
+
+    cache_set(cache_key, out)
+    return out
+
+
+# ============================================================================
+# 選擇權情緒：P/C ratio、IV、Max Pain
+# ============================================================================
+@app.get("/api/options/{code}")
+def api_options(code: str):
+    """近月選擇權情緒：總 call/put 量、P/C ratio、平均 IV、Max Pain。"""
+    cache_key = f"options:{code}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    wl = load_watchlist()
+    info = wl.get(code)
+    if not info:
+        raise HTTPException(404, "code not in watchlist")
+    yf_code = info.get("yf", code)
+
+    try:
+        t = yf.Ticker(yf_code)
+        expiries = list(t.options or [])
+        if not expiries:
+            raise HTTPException(503, "無選擇權資料")
+
+        # 近月（第一個到期日）
+        nearest = expiries[0]
+        ch = t.option_chain(nearest)
+        calls = ch.calls
+        puts  = ch.puts
+
+        # 抓即時價當參考
+        spot = None
+        try:
+            h = t.history(period="2d", auto_adjust=False)
+            if not h.empty:
+                spot = float(h.iloc[-1]["Close"])
+        except Exception:
+            pass
+
+        call_vol = int(calls["volume"].fillna(0).sum())
+        put_vol  = int(puts["volume"].fillna(0).sum())
+        call_oi  = int(calls["openInterest"].fillna(0).sum())
+        put_oi   = int(puts["openInterest"].fillna(0).sum())
+
+        pc_vol = round(put_vol / call_vol, 2) if call_vol else None
+        pc_oi  = round(put_oi  / call_oi, 2)  if call_oi  else None
+
+        # 平均 IV (價量加權)
+        def _wiv(df):
+            if df.empty: return None
+            iv = df["impliedVolatility"].fillna(0)
+            w  = df["volume"].fillna(0)
+            tot = w.sum()
+            if tot == 0:
+                return float(iv.mean()) if len(iv) > 0 else None
+            return float((iv * w).sum() / tot)
+        call_iv = _wiv(calls)
+        put_iv  = _wiv(puts)
+
+        # Max Pain: 找一個 strike，讓所有 OI 的痛苦總和最小
+        strikes = sorted(set(list(calls["strike"]) + list(puts["strike"])))
+        max_pain = None
+        if strikes:
+            best = None
+            for K in strikes:
+                pain_c = ((K - calls["strike"]).clip(lower=0) * calls["openInterest"].fillna(0)).sum()
+                pain_p = ((puts["strike"] - K).clip(lower=0) * puts["openInterest"].fillna(0)).sum()
+                total = float(pain_c + pain_p)
+                if best is None or total < best[1]:
+                    best = (K, total)
+            max_pain = float(best[0]) if best else None
+
+        # 異常成交（vol > 3x OI 的合約）— 取最熱前 5
+        unusual = []
+        for df, side in [(calls, "call"), (puts, "put")]:
+            d = df.copy()
+            d["volume"] = d["volume"].fillna(0)
+            d["openInterest"] = d["openInterest"].fillna(0)
+            d = d[(d["openInterest"] > 0) & (d["volume"] > 3 * d["openInterest"])]
+            for _, row in d.nlargest(3, "volume").iterrows():
+                unusual.append({
+                    "side":   side,
+                    "strike": float(row["strike"]),
+                    "vol":    int(row["volume"]),
+                    "oi":     int(row["openInterest"]),
+                    "iv":     float(row["impliedVolatility"]) if not pd.isna(row["impliedVolatility"]) else None,
+                })
+        unusual.sort(key=lambda x: -x["vol"])
+        unusual = unusual[:5]
+
+        # 情緒結論
+        sentiment = "neutral"
+        if pc_vol is not None:
+            if pc_vol < 0.7:    sentiment = "bullish"
+            elif pc_vol > 1.3:  sentiment = "bearish"
+
+        out = {
+            "code":     code,
+            "expiry":   nearest,
+            "spot":     spot,
+            "call_vol": call_vol, "put_vol": put_vol,
+            "call_oi":  call_oi,  "put_oi":  put_oi,
+            "pc_vol":   pc_vol,   "pc_oi":   pc_oi,
+            "call_iv":  round(call_iv, 3) if call_iv else None,
+            "put_iv":   round(put_iv,  3) if put_iv  else None,
+            "max_pain": max_pain,
+            "max_pain_diff_pct": round((max_pain - spot) / spot * 100, 2) if (max_pain and spot) else None,
+            "unusual":  unusual,
+            "sentiment": sentiment,
+            "expiries": expiries[:6],
+        }
+        cache_set(cache_key, out)
+        return out
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(503, f"options data fail: {e}")
+
+
+# ============================================================================
+# 總經 panel：VIX、10Y、DXY、Fed Funds
+# ============================================================================
+@app.get("/api/macro")
+def api_macro():
+    """總經背景：VIX 恐慌指數、10Y 公債、美元指數、Fed Funds proxy。"""
+    cache_key = "macro:snapshot"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    targets = [
+        ("VIX",  "^VIX",      "恐慌指數", "%",   {"lo": 15, "hi": 25}),
+        ("10Y",  "^TNX",      "10年公債", "%",   {"lo": 3.5, "hi": 4.5}),
+        ("DXY",  "DX-Y.NYB",  "美元指數", "",    {"lo": 100, "hi": 106}),
+        ("2Y",   "^IRX",      "13週短率 (Fed Funds proxy)", "%", {"lo": 4.0, "hi": 5.0}),
+    ]
+    out = []
+    end = pd.Timestamp.today()
+    start = end - pd.Timedelta(days=10)
+    for code, yf_code, label, unit, band in targets:
+        try:
+            t = yf.Ticker(yf_code)
+            h = t.history(start=start, end=end, auto_adjust=False)
+            if h.empty or len(h) < 2:
+                out.append({"code": code, "label": label, "value": None, "change": None,
+                            "status": "—", "unit": unit})
+                continue
+            cur  = float(h.iloc[-1]["Close"])
+            prev = float(h.iloc[-2]["Close"])
+            chg  = round(cur - prev, 3)
+            chg_pct = round((cur - prev) / prev * 100, 2) if prev else 0
+
+            # 狀態判斷
+            status = "neutral"
+            if code == "VIX":
+                if cur > band["hi"]: status = "danger"
+                elif cur < band["lo"]: status = "calm"
+            elif code in ("10Y", "2Y"):
+                if cur > band["hi"]: status = "high"
+                elif cur < band["lo"]: status = "low"
+            elif code == "DXY":
+                if cur > band["hi"]: status = "strong"
+                elif cur < band["lo"]: status = "weak"
+
+            out.append({
+                "code":     code,
+                "yf":       yf_code,
+                "label":    label,
+                "value":    round(cur, 3),
+                "prev":     round(prev, 3),
+                "change":   chg,
+                "change_pct": chg_pct,
+                "unit":     unit,
+                "status":   status,
+                "band":     band,
+            })
+        except Exception as e:
+            print(f"[macro] {code}: {e}")
+            out.append({"code": code, "label": label, "value": None, "status": "—", "unit": unit})
+
+    cache_set(cache_key, out)
+    return out
+
+
 @app.get("/")
 def root():
     return FileResponse(ROOT / "index.html")
