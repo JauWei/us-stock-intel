@@ -120,6 +120,63 @@
   .macro-cell .ml-chg { font-size: 11px; font-variant-numeric: tabular-nums; }
   .macro-cell.loading { color: var(--muted); justify-content: center; align-items: center; }
 
+  /* ===== Squeeze View ===== */
+  .squeeze-view { display: none; }
+  .squeeze-view.show { display: block; }
+
+  /* ===== Risk View ===== */
+  .risk-view { display: none; }
+  .risk-view.show { display: block; }
+  .risk-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;
+  }
+  @media (max-width: 900px) { .risk-grid { grid-template-columns: 1fr; } }
+  .risk-card {
+    background: var(--bg-1); border: 1px solid var(--line);
+    border-radius: 12px; padding: 16px;
+  }
+  .risk-card h3 {
+    font-size: 14px; margin-bottom: 12px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .risk-bar {
+    margin-bottom: 8px;
+  }
+  .risk-bar .label {
+    display: flex; justify-content: space-between;
+    font-size: 12px; margin-bottom: 3px;
+  }
+  .risk-bar .label .val {
+    font-variant-numeric: tabular-nums; font-weight: 600;
+  }
+  .risk-bar .track {
+    height: 8px; background: var(--bg-2); border-radius: 4px; overflow: hidden;
+  }
+  .risk-bar .fill {
+    height: 100%; transition: width 0.3s;
+  }
+  .risk-bar.warn .fill { background: var(--orange); }
+  .risk-bar.danger .fill { background: var(--red); }
+  .risk-bar.ok .fill { background: var(--green); }
+  .risk-bar.neutral .fill { background: var(--cyan); }
+  .risk-warning {
+    background: rgba(255,90,118,0.1); border: 1px solid var(--red);
+    padding: 10px 14px; border-radius: 8px; margin-bottom: 12px;
+    color: var(--red); font-size: 13px;
+  }
+  .corr-matrix {
+    display: grid; gap: 2px; font-family: "SF Mono", Consolas, monospace;
+    font-size: 10px;
+  }
+  .corr-cell {
+    padding: 4px 6px; text-align: center; border-radius: 3px;
+    background: var(--bg-2); min-width: 40px;
+  }
+  .corr-cell.header {
+    background: transparent; color: var(--cyan); font-weight: 700;
+  }
+  .corr-cell.diag { background: var(--bg-0); color: var(--muted); }
+
   /* ===== Earnings Calendar View ===== */
   .earnings-view { display: none; }
   .earnings-view.show { display: block; }
@@ -158,6 +215,33 @@
   .earn-row .hist-chip .v { font-weight: 700; font-variant-numeric: tabular-nums; }
   .earn-row .hist-chip.beat .v { color: var(--green); }
   .earn-row .hist-chip.miss .v { color: var(--red); }
+
+  /* ===== Pre/Post Market Strip ===== */
+  .xhours-strip {
+    margin-top: 10px; padding: 8px 12px;
+    border-radius: 8px; background: var(--bg-2);
+    border: 1px solid var(--line);
+    display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+    font-size: 12px;
+  }
+  .xhours-strip .seg-label {
+    color: var(--muted); font-size: 11px; letter-spacing: 1px;
+  }
+  .xhours-strip .seg-pre { color: var(--cyan); font-weight: 600; }
+  .xhours-strip .seg-post { color: var(--orange); font-weight: 600; }
+  .xhours-strip .seg-val {
+    font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums;
+  }
+  .xhours-strip .seg-chg { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .xhours-strip .state-pill {
+    padding: 3px 8px; border-radius: 8px; font-size: 10px;
+    background: var(--bg-1); border: 1px solid var(--line);
+    color: var(--muted); letter-spacing: 1px;
+  }
+  .xhours-strip .state-pill.pre   { color: var(--cyan); border-color: var(--cyan); }
+  .xhours-strip .state-pill.post  { color: var(--orange); border-color: var(--orange); }
+  .xhours-strip .state-pill.open  { color: var(--green); border-color: var(--green); }
+  .xhours-strip .state-pill.closed{ color: var(--muted); }
 
   /* ===== Options Panel ===== */
   .opt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 12px; }
@@ -829,6 +913,8 @@
       <div class="opt" data-view="heat">🌡 族群熱度</div>
       <div class="opt" data-view="pf">💼 我的持股</div>
       <div class="opt" data-view="earn">📅 財報日曆</div>
+      <div class="opt" data-view="squeeze">🔥 軋空</div>
+      <div class="opt" data-view="risk">⚖️ 風險</div>
       <div class="opt" data-view="bt">📈 回測</div>
     </div>
   </div>
@@ -855,6 +941,8 @@
           <div>(<span id="pct">+1.49%</span>)</div>
         </div>
       </div>
+      <!-- 盤前/盤後即時 -->
+      <div class="xhours-strip" id="xhoursStrip" style="display:none;"></div>
       <div class="quick-grid">
         <div class="quick-cell"><div class="label">開盤</div><div class="value" id="qOpen">4165.00</div></div>
         <div class="quick-cell"><div class="label">最高</div><div class="value" id="qHigh" style="color:var(--red)">4460.00</div></div>
@@ -1331,6 +1419,43 @@
         </thead>
         <tbody></tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- ===== SHORT SQUEEZE VIEW ===== -->
+  <div class="squeeze-view" id="squeezeView">
+    <div class="rank-controls">
+      <span style="color:var(--orange); font-weight:700; letter-spacing:2px;">🔥 軋空候選掃描</span>
+      <span class="spacer" style="flex:0 0 12px;"></span>
+      <span style="font-size:12px; color:var(--muted);">高 DTC + 多頭訊號 + 正動能 = 軋空潛力 (yfinance shortRatio)</span>
+      <span class="spacer"></span>
+      <span style="font-size:12px; color:var(--muted);" id="sqzCount">—</span>
+    </div>
+    <div style="overflow-x:auto;">
+      <table class="rank-table" id="sqzTable">
+        <thead>
+          <tr>
+            <th>排名</th><th>分數</th><th>代號 / 名稱</th><th>族群</th>
+            <th>現價</th><th>今日</th>
+            <th>DTC<span style="color:var(--muted);font-size:10px;"> (天)</span></th>
+            <th>短倉占流通</th><th>短倉月增</th>
+            <th>原因</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ===== PORTFOLIO RISK VIEW ===== -->
+  <div class="risk-view" id="riskView">
+    <div class="rank-controls">
+      <span style="color:var(--cyan); font-weight:700; letter-spacing:2px;">⚖️ 投組風險面板</span>
+      <span class="spacer" style="flex:0 0 12px;"></span>
+      <span style="font-size:12px; color:var(--muted);">Beta · 板塊集中度 · 相關性 (從 portfolio.json 計算)</span>
+    </div>
+    <div id="riskContent">
+      <div style="color:var(--muted);text-align:center;padding:40px;">⏳ 載入中…</div>
     </div>
   </div>
 
@@ -1849,13 +1974,17 @@ function switchView(v) {
   document.getElementById("heatView").classList.toggle("show", v === "heat");
   document.getElementById("pfView").classList.toggle("show", v === "pf");
   document.getElementById("earnView").classList.toggle("show", v === "earn");
+  document.getElementById("squeezeView").classList.toggle("show", v === "squeeze");
+  document.getElementById("riskView").classList.toggle("show", v === "risk");
   document.getElementById("btView").classList.toggle("show", v === "bt");
 
-  if (v === "rank")      loadRanking();
-  else if (v === "heat") loadHeatmap();
-  else if (v === "pf")   loadPortfolio();
-  else if (v === "earn") loadEarnings();
-  else if (v === "bt")   initBtView();
+  if (v === "rank")         loadRanking();
+  else if (v === "heat")    loadHeatmap();
+  else if (v === "pf")      loadPortfolio();
+  else if (v === "earn")    loadEarnings();
+  else if (v === "squeeze") loadSqueeze();
+  else if (v === "risk")    loadRisk();
+  else if (v === "bt")      initBtView();
   else if (state.activeCode) loadStock(state.activeCode);
 }
 
@@ -1943,6 +2072,203 @@ async function loadEarnings() {
     }).join("");
   } catch (e) {
     el.innerHTML = `<div style="color:var(--red);text-align:center;padding:40px;">⚠️ ${e.message}</div>`;
+  }
+}
+
+/* =========================================================================
+ * Short Squeeze Scanner
+ * ======================================================================= */
+async function loadSqueeze() {
+  const tbody = document.querySelector("#sqzTable tbody");
+  const cnt = document.getElementById("sqzCount");
+  tbody.innerHTML = `<tr><td colspan="10" style="padding:30px;color:var(--muted);">📡 載入中 (首次抓 yfinance info 約 30-60 秒)…</td></tr>`;
+  try {
+    const data = await apiGet("/api/short-squeeze", 120000);
+    cnt.textContent = `${data.length} 檔`;
+    if (!data || data.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="10" style="padding:30px;color:var(--muted);">📭 無軋空候選資料</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = data.map((r, i) => {
+      const rankCls = i === 0 ? "gold" : i === 1 ? "silver" : i === 2 ? "bronze" : "normal";
+      const scoreCol = r.score >= 60 ? "var(--red)" : r.score >= 35 ? "var(--orange)" : r.score >= 15 ? "var(--cyan)" : "var(--muted)";
+      const dtcStr = r.short_ratio != null ? r.short_ratio.toFixed(1) : "—";
+      const dtcCol = r.short_ratio >= 7 ? "var(--red)" : r.short_ratio >= 5 ? "var(--orange)" : "var(--text)";
+      const spStr  = r.short_pct != null ? r.short_pct.toFixed(1) + "%" : "—";
+      const spCol  = r.short_pct >= 15 ? "var(--red)" : r.short_pct >= 10 ? "var(--orange)" : "var(--text)";
+      const chgCol = r.short_chg_pct == null ? "var(--muted)" : r.short_chg_pct > 0 ? "var(--red)" : "var(--green)";
+      const chgStr = r.short_chg_pct == null ? "—" : (r.short_chg_pct >= 0 ? "+" : "") + r.short_chg_pct + "%";
+      const reasons = (r.reasons || []).slice(0, 4).map(t => `<span style="font-size:10px;background:var(--bg-2);padding:2px 6px;border-radius:6px;margin-right:3px;">${t}</span>`).join("");
+      return `
+        <tr data-code="${r.code}">
+          <td><span class="rank-num ${rankCls}">${i+1}</span></td>
+          <td style="font-size:18px;font-weight:800;color:${scoreCol};">${r.score}</td>
+          <td><strong style="color:var(--yellow);">${r.code}</strong><br><span style="font-size:11px;color:var(--muted);">${r.name}</span></td>
+          <td style="font-size:11px;color:var(--muted);">${r.group}</td>
+          <td>${r.price.toFixed(2)}</td>
+          <td style="color:${r.change_pct >= 0 ? 'var(--red)' : 'var(--green)'};">${r.change_pct >= 0 ? '+' : ''}${r.change_pct}%</td>
+          <td style="color:${dtcCol};font-weight:700;">${dtcStr}</td>
+          <td style="color:${spCol};">${spStr}</td>
+          <td style="color:${chgCol};">${chgStr}</td>
+          <td>${reasons}</td>
+        </tr>`;
+    }).join("");
+    tbody.querySelectorAll("tr[data-code]").forEach(tr => {
+      tr.addEventListener("click", () => {
+        state.activeCode = tr.dataset.code;
+        switchView("stock");
+        loadStock(state.activeCode);
+      });
+    });
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="10" style="padding:30px;color:var(--red);">⚠️ ${e.message}</td></tr>`;
+  }
+}
+
+/* =========================================================================
+ * Portfolio Risk
+ * ======================================================================= */
+async function loadRisk() {
+  const el = document.getElementById("riskContent");
+  el.innerHTML = `<div style="color:var(--muted);text-align:center;padding:40px;">⏳ 載入中 (首次計算 beta + 相關性約 15-30 秒)…</div>`;
+  try {
+    const r = await apiGet("/api/portfolio-risk", 60000);
+    if (!r || !r.holdings || r.holdings.length === 0) {
+      el.innerHTML = `<div style="color:var(--muted);text-align:center;padding:40px;">📭 無持股資料 (請先到「💼 我的持股」新增)</div>`;
+      return;
+    }
+    // 集中度 warning
+    const warnHtml = (r.warnings || []).map(w => `<div class="risk-warning">⚠️ ${w}</div>`).join("");
+
+    // Sector concentration bars
+    const sectors = r.sectors || [];
+    const sectorBars = sectors.map(s => {
+      const pct = s.weight_pct;
+      const cls = pct >= 50 ? "danger" : pct >= 30 ? "warn" : pct >= 15 ? "neutral" : "ok";
+      return `
+        <div class="risk-bar ${cls}">
+          <div class="label"><span>${s.group}</span><span class="val">${pct.toFixed(1)}%</span></div>
+          <div class="track"><div class="fill" style="width:${Math.min(100, pct)}%;"></div></div>
+        </div>`;
+    }).join("");
+
+    // Beta breakdown per holding
+    const holdingsRows = (r.holdings || []).map(h => {
+      const betaCol = h.beta == null ? "var(--muted)" : h.beta > 1.5 ? "var(--red)" : h.beta > 1.1 ? "var(--orange)" : h.beta < 0.8 ? "var(--green)" : "var(--text)";
+      return `
+        <tr>
+          <td style="color:var(--cyan);font-weight:600;">${h.code}</td>
+          <td style="font-size:11px;color:var(--muted);">${h.group || '—'}</td>
+          <td>${h.weight_pct.toFixed(1)}%</td>
+          <td style="color:${betaCol};font-weight:700;">${h.beta != null ? h.beta.toFixed(2) : '—'}</td>
+          <td style="color:${h.contrib_beta == null ? 'var(--muted)' : 'var(--text)'};">${h.contrib_beta != null ? h.contrib_beta.toFixed(2) : '—'}</td>
+        </tr>`;
+    }).join("");
+
+    // Correlation matrix
+    const codes = r.corr_codes || [];
+    let corrHtml = "";
+    if (codes.length > 0 && r.corr_matrix) {
+      const cols = `40px ${codes.map(()=>'1fr').join(' ')}`;
+      const header = `<div class="corr-cell header"></div>` + codes.map(c=>`<div class="corr-cell header">${c}</div>`).join("");
+      const rows = codes.map((c, i) => {
+        const cells = codes.map((c2, j) => {
+          const v = r.corr_matrix[i][j];
+          if (i === j) return `<div class="corr-cell diag">—</div>`;
+          if (v == null) return `<div class="corr-cell">—</div>`;
+          const bg = v >= 0.8 ? "rgba(255,90,118,0.35)" : v >= 0.5 ? "rgba(255,165,0,0.25)" : v >= 0.2 ? "rgba(0,229,255,0.15)" : "var(--bg-2)";
+          return `<div class="corr-cell" style="background:${bg};">${v.toFixed(2)}</div>`;
+        }).join("");
+        return `<div class="corr-cell header">${c}</div>${cells}`;
+      }).join("");
+      corrHtml = `<div class="corr-matrix" style="grid-template-columns:${cols};">${header}${rows}</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:8px;">紅 ≥ 0.8 高相關 (假分散) · 橘 ≥ 0.5 · 藍 ≥ 0.2 · 灰 低相關</div>`;
+    }
+
+    el.innerHTML = `
+      ${warnHtml}
+      <div class="risk-grid">
+        <div class="risk-card">
+          <h3>📊 整體</h3>
+          <div class="risk-bar ${r.portfolio_beta > 1.3 ? 'danger' : r.portfolio_beta > 1.1 ? 'warn' : 'ok'}">
+            <div class="label"><span>投組 Beta vs SPY</span><span class="val">${r.portfolio_beta != null ? r.portfolio_beta.toFixed(2) : '—'}</span></div>
+            <div class="track"><div class="fill" style="width:${Math.min(100, (r.portfolio_beta || 0) * 50)}%;"></div></div>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px;">
+            > 1.3 槓桿過大,SPY 跌 10% 你會跌 ≥ 13% · 1.0 = 與大盤同步 · &lt; 0.8 防守
+          </div>
+          <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line);">
+            <div style="font-size:12px;color:var(--muted);">總持股: ${r.total_holdings} 檔 · 總市值: $${(r.total_value || 0).toLocaleString(undefined, {maximumFractionDigits: 0})}</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:4px;">未實現損益: <span style="color:${r.total_pnl >= 0 ? 'var(--red)' : 'var(--green)'};">${r.total_pnl >= 0 ? '+' : ''}$${(r.total_pnl || 0).toLocaleString(undefined, {maximumFractionDigits: 0})}</span></div>
+          </div>
+        </div>
+        <div class="risk-card">
+          <h3>🏭 板塊集中度</h3>
+          ${sectorBars || '<div style="color:var(--muted);">無資料</div>'}
+        </div>
+      </div>
+      <div class="risk-card" style="margin-bottom:16px;">
+        <h3>📈 個股 Beta 拆解</h3>
+        <table style="width:100%;font-size:12px;">
+          <thead>
+            <tr style="border-bottom:1px solid var(--line);color:var(--muted);">
+              <th style="text-align:left;padding:6px;">代號</th>
+              <th style="text-align:left;padding:6px;">族群</th>
+              <th style="text-align:left;padding:6px;">權重</th>
+              <th style="text-align:left;padding:6px;">Beta</th>
+              <th style="text-align:left;padding:6px;">貢獻 Beta</th>
+            </tr>
+          </thead>
+          <tbody>${holdingsRows}</tbody>
+        </table>
+      </div>
+      ${corrHtml ? `<div class="risk-card"><h3>🔗 持股相關性矩陣 (60 日)</h3>${corrHtml}</div>` : ''}
+    `;
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red);text-align:center;padding:40px;">⚠️ ${e.message}</div>`;
+  }
+}
+
+/* =========================================================================
+ * Pre/Post Market Quote
+ * ======================================================================= */
+async function loadQuote(code) {
+  const strip = document.getElementById("xhoursStrip");
+  try {
+    const q = await apiGet(`/api/quote/${code}`, 15000);
+    const pre  = q.pre_market;
+    const post = q.post_market;
+    if (!pre && !post) { strip.style.display = "none"; return; }
+
+    const fmt = (v) => v == null ? "—" : v.toFixed(2);
+    const fmtChg = (v, p) => {
+      if (v == null) return "";
+      const cls = v >= 0 ? "pos" : "neg";
+      const arrow = v >= 0 ? "▲" : "▼";
+      const pStr = (p != null) ? ` (${p >= 0 ? '+' : ''}${p.toFixed(2)}%)` : "";
+      return `<span class="seg-chg ${cls}">${arrow} ${v >= 0 ? '+' : ''}${v.toFixed(2)}${pStr}</span>`;
+    };
+    const stateMap = {
+      "PRE":      ['pre',    '🌅 盤前'],
+      "REGULAR":  ['open',   '🟢 盤中'],
+      "POST":     ['post',   '🌃 盤後'],
+      "POSTPOST": ['post',   '🌙 延長盤後'],
+      "CLOSED":   ['closed', '🔴 收盤'],
+    };
+    const [stateCls, stateTxt] = stateMap[q.market_state] || ['closed', q.market_state];
+
+    let html = `<span class="state-pill ${stateCls}">${stateTxt}</span>`;
+    if (pre && pre.price) {
+      html += `<span class="seg-label">🌅 盤前</span><span class="seg-val seg-pre">${fmt(pre.price)}</span>${fmtChg(pre.change, pre.pct)}`;
+    }
+    if (post && post.price) {
+      if (pre) html += `<span style="color:var(--line);">│</span>`;
+      html += `<span class="seg-label">🌃 盤後</span><span class="seg-val seg-post">${fmt(post.price)}</span>${fmtChg(post.change, post.pct)}`;
+    }
+    strip.innerHTML = html;
+    strip.style.display = "flex";
+  } catch (e) {
+    strip.style.display = "none";
   }
 }
 
@@ -2222,6 +2548,7 @@ async function loadStock(code) {
   loadInsider(s.code);
   loadInstitutional(s.code);
   loadValuation(s.code);
+  loadQuote(s.code);
   renderRadar(s);
 
   // AI 評論：切股票時重置（不自動產生避免吃 token）
@@ -3058,7 +3385,27 @@ async function generateAiComment() {
     const r = await apiGet(`/api/ai-comment/${state.activeCode}`, 30000);
     if (r.ok) {
       txt.className = "ai-text";
-      txt.textContent = r.comment;
+      // 3-段式結構化顯示;若無解析結果則 fallback 原文
+      if (r.thesis || r.risks || (r.triggers && r.triggers.length)) {
+        const triggersHtml = (r.triggers || []).map(t =>
+          `<div style="padding:6px 10px;background:var(--bg-2);border-left:3px solid var(--yellow);border-radius:4px;margin:4px 0;font-size:13px;">${t}</div>`
+        ).join("");
+        txt.innerHTML = `
+          <div style="margin-bottom:14px;">
+            <div style="font-size:11px;color:var(--cyan);letter-spacing:2px;margin-bottom:4px;">🎯 論點 THESIS</div>
+            <div style="font-size:13px;line-height:1.7;">${(r.thesis || '—').replace(/\n/g, '<br>')}</div>
+          </div>
+          <div style="margin-bottom:14px;">
+            <div style="font-size:11px;color:var(--red);letter-spacing:2px;margin-bottom:4px;">⚠️ 風險 RISKS</div>
+            <div style="font-size:13px;line-height:1.7;">${(r.risks || '—').replace(/\n/g, '<br>')}</div>
+          </div>
+          <div>
+            <div style="font-size:11px;color:var(--yellow);letter-spacing:2px;margin-bottom:4px;">🔔 觸發 TRIGGERS</div>
+            ${triggersHtml || '<div style="color:var(--muted);font-size:12px;">無</div>'}
+          </div>`;
+      } else {
+        txt.textContent = r.comment;
+      }
       status.textContent = `資料日期 ${r.asOf || "—"}`;
     } else {
       txt.className = "ai-text empty";

@@ -18,6 +18,7 @@ FastAPI + yfinance + Gemini + ECharts
 - **個人持股**：成本/市值/損益/報酬率/權重自動計算（USD）
 - **AI 評論**：Gemini 把指標 + 分析師評等 + 訊號 + 持股餵進去產 4-6 句中文評估
 - **Telegram 警示**：上下方價位設定，背景每 5 分鐘掃描，突破/跌破自動推播
+- **每日早報**：`daily_brief.py` 整合總經/財報/異動/軋空候選,Task Scheduler 排程 8:00 AM 推 Telegram
 - **多週期 K 線**：日 / 週 / 月切換 + S&P 500 疊加
 - **基本面**：季營收（含 YoY）+ 季 EPS（最近 12 季）
 

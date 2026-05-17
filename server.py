@@ -2152,8 +2152,18 @@ def api_ai_comment(code: str):
         pos = (f"\n使用者持股：{total_shares} 股 ({n} 筆)，平均成本 ${avg_cost:.2f}，"
                f"損益 {ret:+.2f}%，移動停利建議：{trail.get('rule','—')}")
 
-    prompt = f"""你是美股技術分析助理。用 4-6 句繁體中文評論以下個股，最後給「短線操作建議」一句話。
-請避免免責聲明、不要列點，直接給結論。評論時請綜合技術面 + 籌碼面 (內部人 + 13F 機構)。
+    prompt = f"""你是美股技術分析助理。針對以下個股,用繁體中文寫**結構化投資論點**,嚴格依照下列格式回覆:
+
+【論點】
+2-3 句說明為什麼這檔值得買/持有,結合技術面 + 籌碼面 (內部人 + 13F)。
+
+【風險】
+2-3 句具體寫出什麼狀況下要警惕或重新評估 (例如: 跌破 $X、RSI 過熱、機構出貨、財報不如預期)。
+
+【觸發】
+明確的可執行訊號,2-3 條,每條一行,格式如「📈 突破 $X → 加碼 1/3」「⚠️ RSI > 80 → 減碼 1/2」「🛑 跌破 $X 停利出場」。
+
+不要免責聲明,不要寫「以上分析僅供參考」之類的話。三段都用上述【】標題開頭。
 
 【{d['name']} ({d['code']}) {d['tag']}】
 收盤 ${d['price']}（前日 ${d['prev']}, {(d['price']-d['prev'])/d['prev']*100:+.2f}%）
@@ -2169,7 +2179,28 @@ RSI(14) = {d['rsi']}, KD(9,3) K/D = {d['kd_k']}/{d['kd_d']}, MACD {d['macd']}
     except Exception as e:
         return {"ok": False, "msg": f"Gemini 失敗: {e}"}
 
-    out = {"ok": True, "code": code, "comment": text, "asOf": d["asOf"]}
+    # 解析三段結構
+    def _extract(full: str, label: str) -> str:
+        import re
+        # 找【label】... 直到下一個【或字串結尾
+        m = re.search(rf"【{label}】\s*([\s\S]*?)(?=【|$)", full)
+        return m.group(1).strip() if m else ""
+
+    thesis  = _extract(text, "論點")
+    risks   = _extract(text, "風險")
+    triggers_raw = _extract(text, "觸發")
+    triggers_list = [ln.strip().lstrip("-•·").strip()
+                     for ln in triggers_raw.split("\n")
+                     if ln.strip() and len(ln.strip()) > 5]
+
+    out = {
+        "ok": True, "code": code,
+        "comment":  text,  # 保留原始,前端可降級顯示
+        "thesis":   thesis,
+        "risks":    risks,
+        "triggers": triggers_list,
+        "asOf":     d["asOf"],
+    }
     cache_set(cache_key, out)
     return out
 
@@ -2642,6 +2673,333 @@ def api_backtest(
         "equity_curve": ec_ds,
         "trades": trades[-100:],
     }
+
+
+# ============================================================================
+# 投組風險：Beta、板塊集中度、相關性矩陣
+# ============================================================================
+@app.get("/api/portfolio-risk")
+def api_portfolio_risk():
+    """從 portfolio.json 計算投組風險指標。"""
+    cache_key = "portfolio_risk"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    p = load_portfolio()
+    if not p:
+        return {"holdings": [], "sectors": [], "warnings": [],
+                "portfolio_beta": None, "corr_codes": [], "corr_matrix": [],
+                "total_holdings": 0, "total_value": 0, "total_pnl": 0}
+
+    wl = load_watchlist()
+    codes = sorted(set(h["code"] for h in p if h.get("code")))
+    yf_codes = [wl.get(c, {}).get("yf", c) for c in codes]
+
+    # 1. 抓 60 日收盤 + SPY
+    end = pd.Timestamp.today()
+    start = end - pd.Timedelta(days=90)
+    closes = pd.DataFrame()
+    try:
+        all_codes = list(set(yf_codes + ["SPY"]))
+        data = yf.download(all_codes, start=start, end=end, auto_adjust=False,
+                           progress=False, group_by="ticker", threads=True)
+        for yfc in all_codes:
+            try:
+                col = data[yfc]["Close"] if len(all_codes) > 1 else data["Close"]
+                closes[yfc] = col
+            except Exception:
+                pass
+        closes = closes.dropna(how="all")
+    except Exception as e:
+        print(f"[risk] yfinance fail: {e}")
+
+    # 2. Daily returns + beta calc
+    returns = closes.pct_change().dropna() if not closes.empty else pd.DataFrame()
+    spy_ret = returns["SPY"] if "SPY" in returns.columns else None
+    spy_var = float(spy_ret.var()) if spy_ret is not None and len(spy_ret) > 5 else None
+
+    def _beta(yfc):
+        if spy_ret is None or spy_var is None or spy_var == 0: return None
+        if yfc not in returns.columns: return None
+        try:
+            cov = float(returns[yfc].cov(spy_ret))
+            return round(cov / spy_var, 3)
+        except Exception:
+            return None
+
+    # 3. Per-holding metrics
+    holdings = []
+    total_value = 0.0
+    total_pnl   = 0.0
+    by_group = {}
+    for h in p:
+        code = h.get("code")
+        if not code: continue
+        try:
+            s = fetch_summary(code)
+            price = float(s["price"])
+        except Exception:
+            price = float(h.get("cost_price", 0))
+        yf_code = wl.get(code, {}).get("yf", code)
+        group   = wl.get(code, {}).get("group", "其他")
+        shares  = float(h.get("shares", 0))
+        cost_p  = float(h.get("cost_price", 0))
+        value   = shares * price
+        pnl     = value - shares * cost_p
+        total_value += value
+        total_pnl   += pnl
+        beta = _beta(yf_code)
+        holdings.append({
+            "code":   code,
+            "name":   wl.get(code, {}).get("name", code),
+            "group":  group,
+            "shares": shares,
+            "price":  price,
+            "value":  value,
+            "pnl":    pnl,
+            "beta":   beta,
+            "yf":     yf_code,
+        })
+        by_group.setdefault(group, 0)
+        by_group[group] += value
+
+    # 4. Weights + contributions
+    for h in holdings:
+        h["weight_pct"] = round(h["value"] / total_value * 100, 2) if total_value else 0
+        h["contrib_beta"] = round(h["beta"] * h["weight_pct"] / 100, 3) if h["beta"] is not None else None
+
+    portfolio_beta = round(sum(h["contrib_beta"] for h in holdings if h["contrib_beta"] is not None), 3)
+
+    # 5. Sectors
+    sectors = []
+    for g, v in by_group.items():
+        sectors.append({
+            "group": g,
+            "value": v,
+            "weight_pct": round(v / total_value * 100, 2) if total_value else 0,
+        })
+    sectors.sort(key=lambda x: -x["weight_pct"])
+
+    # 6. Warnings
+    warnings = []
+    if portfolio_beta is not None and portfolio_beta > 1.3:
+        warnings.append(f"投組 Beta {portfolio_beta} 過高,大盤跌 10% 你會跌 ~{portfolio_beta * 10:.0f}%,考慮降槓桿")
+    if sectors and sectors[0]["weight_pct"] >= 50:
+        warnings.append(f"{sectors[0]['group']} 集中度 {sectors[0]['weight_pct']}%,單一板塊風險過大")
+    if len(holdings) < 5:
+        warnings.append(f"僅 {len(holdings)} 檔持股,分散不足,建議至少 5-8 檔不同板塊")
+
+    # 7. Correlation matrix (60d, 取 top 8 by weight 避免太擠)
+    top_holdings = sorted(holdings, key=lambda x: -x["weight_pct"])[:8]
+    corr_codes = [h["code"] for h in top_holdings]
+    corr_yfs = [h["yf"] for h in top_holdings]
+    corr_matrix = []
+    try:
+        if not returns.empty and len(corr_yfs) >= 2:
+            sub = returns[[c for c in corr_yfs if c in returns.columns]]
+            if not sub.empty:
+                m = sub.corr().round(2)
+                # 對齊 corr_codes 順序
+                aligned = []
+                code_to_yf = dict(zip(corr_codes, corr_yfs))
+                for c1 in corr_codes:
+                    row = []
+                    yfc1 = code_to_yf[c1]
+                    for c2 in corr_codes:
+                        yfc2 = code_to_yf[c2]
+                        if yfc1 in m.columns and yfc2 in m.index:
+                            v = m.loc[yfc1, yfc2]
+                            row.append(None if pd.isna(v) else float(v))
+                        else:
+                            row.append(None)
+                    aligned.append(row)
+                corr_matrix = aligned
+
+                # 額外警示：高相關 pair
+                for i in range(len(corr_codes)):
+                    for j in range(i+1, len(corr_codes)):
+                        v = corr_matrix[i][j]
+                        if v is not None and v >= 0.85:
+                            warnings.append(f"{corr_codes[i]} 與 {corr_codes[j]} 相關性 {v:.2f},是「假分散」")
+    except Exception as e:
+        print(f"[risk corr] {e}")
+
+    out = {
+        "holdings":       holdings,
+        "sectors":        sectors,
+        "portfolio_beta": portfolio_beta,
+        "corr_codes":     corr_codes,
+        "corr_matrix":    corr_matrix,
+        "warnings":       warnings,
+        "total_holdings": len(holdings),
+        "total_value":    round(total_value, 2),
+        "total_pnl":      round(total_pnl, 2),
+    }
+    cache_set(cache_key, out)
+    return out
+
+
+# ============================================================================
+# 軋空候選掃描
+# ============================================================================
+@app.get("/api/short-squeeze")
+def api_short_squeeze():
+    """軋空候選：高 short ratio + 正 RS + 多頭訊號。"""
+    cache_key = "short_squeeze"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    out = []
+    for code in load_watchlist():
+        try:
+            d = fetch_stock(code)
+        except Exception:
+            continue
+        info = load_watchlist().get(code, {})
+        yf_code = info.get("yf", code)
+        try:
+            t = yf.Ticker(yf_code)
+            inf = t.info or {}
+            short_ratio    = inf.get("shortRatio")            # Days to Cover
+            short_pct      = inf.get("shortPercentOfFloat")   # 短倉佔流通比
+            shares_short   = inf.get("sharesShort")
+            shares_prev    = inf.get("sharesShortPriorMonth")
+            float_shares   = inf.get("floatShares")
+            if short_ratio is None and short_pct is None:
+                continue
+
+            # 短倉變化 (+ = 賣空增加)
+            short_chg_pct = None
+            if shares_short and shares_prev:
+                short_chg_pct = round((shares_short - shares_prev) / shares_prev * 100, 1)
+
+            # 評分：DTC 高 + 訊號正向 + RS 強 → 軋空潛力大
+            score = 0
+            reasons = []
+            if short_ratio is not None:
+                if short_ratio >= 7:   score += 30; reasons.append(f"DTC {short_ratio:.1f} 天 (高)")
+                elif short_ratio >= 5: score += 18; reasons.append(f"DTC {short_ratio:.1f} 天")
+                elif short_ratio >= 3: score += 8;  reasons.append(f"DTC {short_ratio:.1f} 天")
+            if short_pct is not None:
+                spct = short_pct * 100 if short_pct < 1 else short_pct
+                if spct >= 15:  score += 25; reasons.append(f"短倉佔流通 {spct:.1f}%")
+                elif spct >= 10: score += 15; reasons.append(f"短倉佔流通 {spct:.1f}%")
+                elif spct >= 5:  score += 6;  reasons.append(f"短倉佔流通 {spct:.1f}%")
+            if short_chg_pct is not None and short_chg_pct > 5:
+                score += 10; reasons.append(f"短倉月增 +{short_chg_pct}%")
+
+            # 動能加分
+            sigs = d.get("signals", [])
+            bull = sum(1 for s in sigs if s.get("color") == "red")
+            if bull >= 2: score += 15; reasons.append(f"{bull} 多頭訊號")
+            elif bull == 1: score += 8
+
+            chg_pct = (d["price"] - d["prev"]) / d["prev"] * 100 if d["prev"] else 0
+            if chg_pct > 3: score += 8; reasons.append(f"今日 +{chg_pct:.1f}%")
+
+            if "多頭" in d.get("trend", ""):
+                score += 5; reasons.append("多頭趨勢")
+
+            out.append({
+                "code":         code,
+                "name":         d["name"],
+                "group":        d.get("group", "—"),
+                "price":        d["price"],
+                "change_pct":   round(chg_pct, 2),
+                "short_ratio":  round(short_ratio, 2) if short_ratio is not None else None,
+                "short_pct":    round(short_pct * 100, 2) if (short_pct is not None and short_pct < 1) else short_pct,
+                "short_chg_pct": short_chg_pct,
+                "shares_short": int(shares_short) if shares_short else None,
+                "float_shares": int(float_shares) if float_shares else None,
+                "score":        score,
+                "reasons":      reasons,
+                "signals":      sigs,
+            })
+        except Exception as e:
+            print(f"[short_squeeze] {code}: {e}")
+            continue
+
+    out.sort(key=lambda x: -x["score"])
+    cache_set(cache_key, out)
+    return out
+
+
+# ============================================================================
+# 盤前 / 盤後即時報價
+# ============================================================================
+@app.get("/api/quote/{code}")
+def api_quote(code: str):
+    """盤前/盤後即時價。短 cache 60 秒。"""
+    cache_key = f"quote:{code}"
+    hit = _cache.get(cache_key)
+    if hit and time.time() - hit[0] < 60:
+        return hit[1]
+
+    wl = load_watchlist()
+    info = wl.get(code)
+    if not info:
+        raise HTTPException(404, f"未追蹤股票 {code}")
+    yf_code = info.get("yf", code)
+    try:
+        t = yf.Ticker(yf_code)
+        # fast_info 比 .info 快很多
+        fi = t.fast_info
+        regular = float(fi.get("last_price") or fi.get("lastPrice") or 0) or None
+        prev_close = float(fi.get("previous_close") or fi.get("previousClose") or 0) or None
+
+        # pre/post 用 .info (慢但較完整)
+        inf = {}
+        try:
+            inf = t.info or {}
+        except Exception:
+            inf = {}
+
+        def _get(d, *keys):
+            for k in keys:
+                v = d.get(k)
+                if v is not None:
+                    return v
+            return None
+
+        pre_price = _get(inf, "preMarketPrice")
+        pre_chg   = _get(inf, "preMarketChange")
+        pre_pct   = _get(inf, "preMarketChangePercent")
+        pre_time  = _get(inf, "preMarketTime")
+
+        post_price = _get(inf, "postMarketPrice")
+        post_chg   = _get(inf, "postMarketChange")
+        post_pct   = _get(inf, "postMarketChangePercent")
+        post_time  = _get(inf, "postMarketTime")
+
+        market_state = _get(inf, "marketState") or "UNKNOWN"
+
+        out = {
+            "code":          code,
+            "yf":            yf_code,
+            "regular":       regular,
+            "prev_close":    prev_close,
+            "market_state":  market_state,  # PRE / REGULAR / POST / POSTPOST / CLOSED
+            "pre_market": {
+                "price":  pre_price,
+                "change": pre_chg,
+                "pct":    pre_pct,
+                "time":   pre_time,
+            } if pre_price else None,
+            "post_market": {
+                "price":  post_price,
+                "change": post_chg,
+                "pct":    post_pct,
+                "time":   post_time,
+            } if post_price else None,
+        }
+        _cache[cache_key] = (time.time(), out)
+        return out
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(503, f"quote fail: {e}")
 
 
 # ============================================================================
