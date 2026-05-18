@@ -224,6 +224,12 @@ def cache_set(key: str, val: Any) -> None:
     _cache[key] = (time.time(), val)
 
 
+def cache_set_ttl(key: str, val: Any, ttl_seconds: int) -> None:
+    """自訂 TTL 寫入快取 (覆蓋預設 CACHE_TTL)。用於 Gemini 等高成本資料。"""
+    # 利用「把儲存時間設未來」的技巧延後失效
+    _cache[key] = (time.time() + ttl_seconds - CACHE_TTL, val)
+
+
 # ----------------------------------------------------------------------------
 # 持久化
 # ----------------------------------------------------------------------------
@@ -849,7 +855,7 @@ def fetch_news(code: str) -> list:
             "time":       n["time"],
             "sentiment":  sentiments[i] if i < len(sentiments) else "neutral",
         })
-    cache_set(f"news:{code}", out)
+    cache_set_ttl(f"news:{code}", out, 3600)  # 1 小時 — 翻譯+情感不需要 5 分鐘更新
     return out
 
 
@@ -2321,6 +2327,12 @@ RSI(14) = {d['rsi']}, KD(9,3) K/D = {d['kd_k']}/{d['kd_d']}, MACD {d['macd']}
     try:
         text = _gemini_call(key, prompt)
     except Exception as e:
+        msg = str(e)
+        if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "spending cap" in msg:
+            return {"ok": False,
+                    "msg": "Gemini 月度花費上限到了。請去 https://ai.studio/spend 拉高 cap, "
+                           "或換另一支 API key (不同 project),或等下個月重置。"
+                           "提示:評論已 cache 12 小時、新聞 1 小時,正常使用每月應該很少打中上限。"}
         return {"ok": False, "msg": f"Gemini 失敗: {e}"}
 
     # 解析三段結構
@@ -2345,7 +2357,7 @@ RSI(14) = {d['rsi']}, KD(9,3) K/D = {d['kd_k']}/{d['kd_d']}, MACD {d['macd']}
         "triggers": triggers_list,
         "asOf":     d["asOf"],
     }
-    cache_set(cache_key, out)
+    cache_set_ttl(cache_key, out, 43200)  # 12 小時 — 評論不會分鐘級變化
     return out
 
 
