@@ -2359,16 +2359,22 @@ RSI(14) = {d['rsi']}, KD(9,3) K/D = {d['kd_k']}/{d['kd_d']}, MACD {d['macd']}
         return {"ok": False, "msg": f"Gemini 失敗: {e}"}
 
     # 解析三段結構
-    def _extract(full: str, label: str) -> str:
-        import re
-        # 找【label】... 直到下一個【或字串結尾
+    import re
+    def _extract_prose(full: str, label: str) -> str:
+        """論點 / 風險 是連續散文,把多重空白合併成單一空格"""
+        m = re.search(rf"【{label}】\s*([\s\S]*?)(?=【|$)", full)
+        if not m: return ""
+        return re.sub(r"\s+", " ", m.group(1)).strip()
+
+    def _extract_lines(full: str, label: str) -> str:
+        """觸發是條列,保留換行"""
         m = re.search(rf"【{label}】\s*([\s\S]*?)(?=【|$)", full)
         return m.group(1).strip() if m else ""
 
-    thesis  = _extract(text, "論點")
-    risks   = _extract(text, "風險")
-    triggers_raw = _extract(text, "觸發")
-    triggers_list = [ln.strip().lstrip("-•·").strip()
+    thesis  = _extract_prose(text, "論點")
+    risks   = _extract_prose(text, "風險")
+    triggers_raw = _extract_lines(text, "觸發")
+    triggers_list = [ln.strip().lstrip("-•·*").strip()
                      for ln in triggers_raw.split("\n")
                      if ln.strip() and len(ln.strip()) > 5]
 
