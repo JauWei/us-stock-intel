@@ -967,6 +967,7 @@
       <div class="opt" data-view="hilo">🎯 52週</div>
       <div class="opt" data-view="cluster">🐳 群聚</div>
       <div class="opt" data-view="theme">🎨 主題輪動</div>
+      <div class="opt" data-view="alertlog">📜 警示紀錄</div>
       <div class="opt" data-view="bt">📈 回測</div>
     </div>
   </div>
@@ -1512,6 +1513,26 @@
     </div>
   </div>
 
+  <!-- ===== ALERT LOG VIEW ===== -->
+  <div class="alertlog-view" id="alertLogView">
+    <div class="rank-controls">
+      <span style="color:var(--yellow); font-weight:700; letter-spacing:2px;">📜 警示觸發紀錄</span>
+      <span class="spacer" style="flex:0 0 12px;"></span>
+      <label style="font-size:12px; color:var(--muted);">回看</label>
+      <select id="alertLogDays" style="padding:5px 10px; background:var(--bg-2); color:var(--text); border:1px solid var(--line); border-radius:8px; font-size:12px;">
+        <option value="7">7 天</option>
+        <option value="30" selected>30 天</option>
+        <option value="90">90 天</option>
+      </select>
+      <span class="spacer"></span>
+      <span style="font-size:12px;color:var(--muted);" id="alertLogCount">—</span>
+    </div>
+    <div id="alertLogStats" style="margin:14px 0;"></div>
+    <div id="alertLogContent">
+      <div style="color:var(--muted);text-align:center;padding:40px;">⏳ 載入中…</div>
+    </div>
+  </div>
+
   <!-- ===== THEME ROTATION VIEW ===== -->
   <div class="theme-view" id="themeView">
     <div class="rank-controls">
@@ -1630,6 +1651,7 @@
 
       <span class="spacer"></span>
       <button class="btn primary" id="btnBtRun">🚀 跑回測</button>
+      <button class="btn" id="btnBtOos" title="Walk-forward 驗證:把區間切 70/30,看 OOS 是否還賺,判斷是否過擬合">🔬 OOS 驗證</button>
     </div>
 
     <div id="btSummary" style="margin-bottom: 14px;">
@@ -2087,6 +2109,7 @@ function switchView(v) {
   document.getElementById("hiloView").classList.toggle("show", v === "hilo");
   document.getElementById("clusterView").classList.toggle("show", v === "cluster");
   document.getElementById("themeView").classList.toggle("show", v === "theme");
+  document.getElementById("alertLogView").classList.toggle("show", v === "alertlog");
   document.getElementById("btView").classList.toggle("show", v === "bt");
 
   if (v === "rank")         loadRanking();
@@ -2098,8 +2121,97 @@ function switchView(v) {
   else if (v === "hilo")    loadHiLo();
   else if (v === "cluster") loadCluster();
   else if (v === "theme")   loadTheme();
+  else if (v === "alertlog") loadAlertLog();
   else if (v === "bt")      initBtView();
   else if (state.activeCode) loadStock(state.activeCode);
+}
+
+/* =========================================================================
+ * Firstrade import
+ * ======================================================================= */
+async function _importFirstrade(mode) {
+  const stat = document.getElementById("ftImportStatus");
+  if (!stat) return;
+  stat.textContent = "📥 匯入中...";
+  try {
+    const r = await fetch(`${API_BASE || ''}/api/portfolio/import-firstrade?mode=${mode}`, { method: "POST" });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "fail");
+    stat.innerHTML = `✅ 已匯入 ${d.imported} 筆 lot (mode=${d.mode}, total=${d.total_after}, 資料 ${d.source_age_hours}h 前)`;
+    setTimeout(() => loadRisk(), 800);  // reload
+  } catch (e) {
+    stat.innerHTML = `<span style="color:var(--red);">⚠️ ${e.message}</span>`;
+  }
+}
+
+/* =========================================================================
+ * Alert Log (警示回顧)
+ * ======================================================================= */
+async function loadAlertLog() {
+  const days = document.getElementById("alertLogDays").value || 30;
+  const stEl = document.getElementById("alertLogStats");
+  const elEl = document.getElementById("alertLogContent");
+  const cnt  = document.getElementById("alertLogCount");
+  elEl.innerHTML = `<div style="color:var(--muted);text-align:center;padding:40px;">⏳ 載入中…</div>`;
+  stEl.innerHTML = ""; cnt.textContent = "—";
+  try {
+    const d = await apiGet(`/api/alerts-log?days=${days}`, 60000);
+    const entries = d.entries || [];
+    const stats   = d.stats   || {};
+    cnt.textContent = `${entries.length} 次`;
+    if (entries.length === 0) {
+      elEl.innerHTML = `<div style="color:var(--muted);text-align:center;padding:40px;">📭 過去 ${days} 天沒有警示觸發</div>`;
+      return;
+    }
+    // stats
+    const statsHtml = Object.entries(stats).map(([k, s]) => {
+      const wr = s.win_rate_5d;
+      const avg = s.avg_5d;
+      const col = wr === null ? "var(--muted)" : wr >= 60 ? "var(--green)" : wr >= 40 ? "var(--yellow)" : "var(--red)";
+      return `
+        <div style="display:inline-block;background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:8px 14px;margin:4px;">
+          <div style="font-size:11px;color:var(--muted);">${k}</div>
+          <div style="font-size:14px;"><strong>${s.n}</strong> 次 · 5d 勝率 <strong style="color:${col};">${wr ?? '—'}%</strong></div>
+          <div style="font-size:11px;color:var(--muted);">平均 ${avg !== null && avg !== undefined ? (avg >= 0 ? '+' : '') + avg + '%' : '—'}</div>
+        </div>`;
+    }).join("");
+    stEl.innerHTML = statsHtml;
+    // entries
+    elEl.innerHTML = `
+      <div style="overflow-x:auto;">
+        <table class="rank-table">
+          <thead>
+            <tr><th>日期</th><th>代號</th><th>類型</th><th>觸發價</th><th>1 天後</th><th>5 天後</th><th>20 天後</th><th>訊息</th></tr>
+          </thead>
+          <tbody>
+            ${entries.map(e => {
+              const fmtR = (v) => v === null || v === undefined ? '<span style="color:var(--muted);">—</span>'
+                : `<span style="color:${v >= 0 ? 'var(--green)' : 'var(--red)'};">${v >= 0 ? '+' : ''}${v}%</span>`;
+              return `
+                <tr data-code="${e.code}" style="cursor:pointer;">
+                  <td style="font-size:11px;color:var(--muted);">${e.date}</td>
+                  <td><strong style="color:var(--yellow);">${e.code}</strong></td>
+                  <td><span style="font-size:11px;background:var(--bg-2);padding:2px 6px;border-radius:6px;">${e.kind}</span></td>
+                  <td>$${e.price?.toFixed?.(2) ?? '—'}</td>
+                  <td>${fmtR(e.ret_1d)}</td>
+                  <td>${fmtR(e.ret_5d)}</td>
+                  <td>${fmtR(e.ret_20d)}</td>
+                  <td style="font-size:11px;color:var(--muted);max-width:300px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${e.msg}</td>
+                </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>`;
+    elEl.querySelectorAll("tr[data-code]").forEach(tr => {
+      tr.addEventListener("click", () => {
+        state.activeCode = tr.dataset.code;
+        switchView("stock");
+        loadStock(state.activeCode);
+      });
+    });
+  } catch (e) {
+    elEl.innerHTML = `<div style="color:var(--red);text-align:center;padding:40px;">⚠️ ${e.message}</div>`;
+  }
 }
 
 /* =========================================================================
@@ -2519,8 +2631,25 @@ async function loadRisk() {
         <div style="font-size:10px;color:var(--muted);margin-top:8px;">紅 ≥ 0.8 高相關 (假分散) · 橘 ≥ 0.5 · 藍 ≥ 0.2 · 灰 低相關</div>`;
     }
 
+    // 額外載入 drawdown 曲線 + rebalance (paralel)
+    let ddData = null, rebData = null;
+    try { [ddData, rebData] = await Promise.all([
+      apiGet("/api/portfolio/drawdown-curve?days=60", 60000).catch(()=>null),
+      apiGet("/api/portfolio/rebalance?by=group",     60000).catch(()=>null),
+    ]); } catch {}
+
     el.innerHTML = `
       ${warnHtml}
+      <div class="risk-card" style="margin-bottom:14px;">
+        <h3>📥 從 Firstrade 同步持倉</h3>
+        <div style="display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);">
+          來源:<code>d:/python/shared/firstrade_holdings.json</code>(Firstrade GUI 開啟「持倉查詢」時自動寫入)
+          <span style="flex:1;"></span>
+          <button class="btn primary" id="btnImportFt">📥 匯入 (replace)</button>
+          <button class="btn" id="btnImportFtMerge">+ Merge</button>
+        </div>
+        <div id="ftImportStatus" style="font-size:11px;color:var(--muted);margin-top:6px;"></div>
+      </div>
       <div class="risk-grid">
         <div class="risk-card">
           <h3>📊 整體</h3>
@@ -2556,8 +2685,56 @@ async function loadRisk() {
           <tbody>${holdingsRows}</tbody>
         </table>
       </div>
-      ${corrHtml ? `<div class="risk-card"><h3>🔗 持股相關性矩陣 (60 日)</h3>${corrHtml}</div>` : ''}
+      ${corrHtml ? `<div class="risk-card" style="margin-bottom:14px;"><h3>🔗 持股相關性矩陣 (60 日)</h3>${corrHtml}</div>` : ''}
+      ${ddData && ddData.holdings && ddData.holdings.length ? `
+      <div class="risk-card" style="margin-bottom:14px;">
+        <h3>🩸 持股 60 日 Drawdown (從滾動高點回檔)</h3>
+        <table style="width:100%;font-size:12px;">
+          <thead><tr style="border-bottom:1px solid var(--line);color:var(--muted);">
+            <th style="text-align:left;padding:6px;">代號</th><th style="padding:6px;">族群</th>
+            <th style="padding:6px;">現價</th><th style="padding:6px;">高點</th>
+            <th style="padding:6px;">目前回檔</th><th style="padding:6px;">期內最深</th>
+          </tr></thead>
+          <tbody>${ddData.holdings.map(h => {
+            const col = h.cur_dd <= -15 ? "var(--red)" : h.cur_dd <= -8 ? "var(--orange)" : h.cur_dd <= -3 ? "var(--yellow)" : "var(--green)";
+            return `<tr>
+              <td style="padding:5px;color:var(--cyan);font-weight:600;">${h.code}</td>
+              <td style="padding:5px;font-size:11px;color:var(--muted);">${h.group}</td>
+              <td style="padding:5px;">$${h.current_price}</td>
+              <td style="padding:5px;color:var(--muted);">$${h.peak_price}</td>
+              <td style="padding:5px;color:${col};font-weight:700;">${h.cur_dd}%</td>
+              <td style="padding:5px;color:var(--red);">${h.max_dd}%</td>
+            </tr>`;
+          }).join("")}</tbody>
+        </table>
+        <div style="font-size:10px;color:var(--muted);margin-top:6px;">紅 ≥ -15% · 橘 ≥ -8% · 黃 ≥ -3% · 綠 接近高點</div>
+      </div>` : ''}
+      ${rebData && rebData.actions && rebData.actions.length ? `
+      <div class="risk-card">
+        <h3>⚖️ 再平衡建議 (依族群)</h3>
+        ${rebData.using_default_target ? '<div style="font-size:11px;color:var(--orange);margin-bottom:8px;">⚠️ 未設目標,現以「維持現狀」為基準。可編輯 rebalance_target.json 設真目標</div>' : ''}
+        <table style="width:100%;font-size:12px;">
+          <thead><tr style="border-bottom:1px solid var(--line);color:var(--muted);">
+            <th style="text-align:left;padding:6px;">族群</th>
+            <th style="padding:6px;">目前 %</th><th style="padding:6px;">目標 %</th>
+            <th style="padding:6px;">差異</th><th style="padding:6px;">動作</th><th style="padding:6px;">金額</th>
+          </tr></thead>
+          <tbody>${rebData.actions.map(a => `
+            <tr>
+              <td style="padding:5px;color:var(--cyan);">${a.key}</td>
+              <td style="padding:5px;">${a.current_pct}%</td>
+              <td style="padding:5px;">${a.target_pct}%</td>
+              <td style="padding:5px;color:${a.delta_pct > 0 ? 'var(--green)' : 'var(--red)'};">${a.delta_pct >= 0 ? '+' : ''}${a.delta_pct}%</td>
+              <td style="padding:5px;font-weight:700;color:${a.action === '買' ? 'var(--red)' : 'var(--green)'};">${a.action}</td>
+              <td style="padding:5px;">$${Math.abs(a.delta_value).toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+            </tr>
+          `).join("")}</tbody>
+        </table>
+      </div>` : ''}
     `;
+    // bind Firstrade import buttons
+    document.getElementById("btnImportFt")?.addEventListener("click", () => _importFirstrade("replace"));
+    document.getElementById("btnImportFtMerge")?.addEventListener("click", () => _importFirstrade("merge"));
   } catch (e) {
     el.innerHTML = `<div style="color:var(--red);text-align:center;padding:40px;">⚠️ ${e.message}</div>`;
   }
@@ -3214,9 +3391,11 @@ function bindToolbar() {
   document.getElementById("btnGenAi").addEventListener("click", () => generateAiComment());
   document.getElementById("btnAddHolding").addEventListener("click", () => openModal("holdingModal"));
   document.getElementById("btnBtRun").addEventListener("click", runBacktest);
+  document.getElementById("btnBtOos")?.addEventListener("click", runBacktestOos);
   document.getElementById("btnLoadOpt")?.addEventListener("click", loadOptions);
   document.getElementById("earnDays")?.addEventListener("change", loadEarnings);
   document.getElementById("clusterDays")?.addEventListener("change", loadCluster);
+  document.getElementById("alertLogDays")?.addEventListener("change", loadAlertLog);
 
   // TWII toggle
   document.getElementById("twiiToggle").addEventListener("click", () => {
@@ -4203,6 +4382,55 @@ function initBtView() {
   }
   stratEl.onchange = updateVisibility;
   updateVisibility();
+}
+
+async function runBacktestOos() {
+  const params = new URLSearchParams({
+    strategy:    document.getElementById("btStrategy").value,
+    start:       document.getElementById("btStart").value,
+    hold_days:   document.getElementById("btHold").value,
+    n_positions: document.getElementById("btN").value,
+    threshold:   document.getElementById("btThreshold").value,
+    group:       document.getElementById("btGroup").value,
+    universe:    "watchlist",
+    capital:     100000,
+    train_ratio: 0.7,
+  });
+  const sumEl = document.getElementById("btSummary");
+  document.getElementById("btTrades").style.display = "none";
+  sumEl.innerHTML = `<div style="padding:30px; text-align:center; color:var(--muted);">🔬 跑 Walk-forward 驗證中(2 倍時間,約 10-30 秒)…</div>`;
+  try {
+    const r = await apiGet(`/api/backtest-oos?${params.toString()}`, 120000);
+    const is_ = r.in_sample.summary, oos = r.out_of_sample.summary;
+    const healthCol = r.health === "passed" ? "var(--green)" :
+                      r.health === "degraded" ? "var(--orange)" : "var(--red)";
+    const healthIcon = r.health === "passed" ? "✅" : r.health === "degraded" ? "⚠️" : "❌";
+    const renderMetrics = (s, title) => `
+      <div class="risk-card" style="margin:0;">
+        <h3>${title}</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px;">
+          <div>區間: <strong>${s.start_date} ~ ${s.end_date}</strong></div>
+          <div>交易日: <strong>${s.trading_days}</strong></div>
+          <div>總報酬: <strong style="color:${s.total_return >= 0 ? 'var(--red)' : 'var(--green)'};">${s.total_return >= 0 ? '+' : ''}${s.total_return}%</strong></div>
+          <div>SPY: <strong>${s.benchmark_return >= 0 ? '+' : ''}${s.benchmark_return}%</strong></div>
+          <div>Alpha: <strong style="color:${s.alpha >= 0 ? 'var(--red)' : 'var(--green)'};">${s.alpha >= 0 ? '+' : ''}${s.alpha}%</strong></div>
+          <div>Max DD: <strong style="color:var(--red);">${s.max_drawdown}%</strong></div>
+          <div>勝率: <strong>${s.win_rate}%</strong></div>
+          <div>交易次數: <strong>${s.n_trades}</strong></div>
+        </div>
+      </div>`;
+    sumEl.innerHTML = `
+      <div style="padding:12px 16px;background:var(--bg-2);border-radius:8px;margin-bottom:14px;border-left:4px solid ${healthCol};">
+        ${healthIcon} <strong style="color:${healthCol};">${r.health.toUpperCase()}</strong> — ${r.note}
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">切點 ${r.split_date} (train ${(r.train_ratio*100).toFixed(0)}% / test ${((1-r.train_ratio)*100).toFixed(0)}%)</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        ${renderMetrics(is_,  "🎓 In-Sample (訓練)")}
+        ${renderMetrics(oos, "🔬 Out-of-Sample (驗證)")}
+      </div>`;
+  } catch (e) {
+    sumEl.innerHTML = `<div style="color:var(--red);padding:20px;">⚠️ ${e.message}</div>`;
+  }
 }
 
 async function runBacktest() {

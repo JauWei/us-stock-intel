@@ -35,9 +35,11 @@ from pydantic import BaseModel
 ROOT = Path(__file__).resolve().parent
 WATCHLIST_FILE = ROOT / "watchlist.json"
 ALERTS_FILE    = ROOT / "alerts.json"
+ALERTS_LOG_FILE = ROOT / "alerts_log.json"
 TELEGRAM_FILE  = ROOT / "telegram.json"
 PORTFOLIO_FILE = ROOT / "portfolio.json"
 GEMINI_FILE    = ROOT / "gemini.json"
+REBALANCE_TARGET_FILE = ROOT / "rebalance_target.json"
 
 # 共用分類檔 — 跨專案 (firstrade_gui_plus 等也讀同一份)
 SHARED_CLASSIFICATION = Path("d:/python/shared/stock_classification.json")
@@ -1307,11 +1309,42 @@ def check_alert(code: str, price: float, prev: float, name: str = "",
     save_json(ALERTS_FILE, alerts)
     for msg in triggered:
         send_telegram(msg)
+        _append_alert_log(code, name, price, msg)
+
+
+def _append_alert_log(code: str, name: str, price: float, msg: str) -> None:
+    """把觸發的警示寫到 alerts_log.json,給「警示回顧」用。"""
+    try:
+        log = load_json(ALERTS_LOG_FILE, [])
+        # 判斷類型 (從訊息 emoji 開頭)
+        kind = "price"
+        for prefix, k in [("🚀", "breakout_up"), ("⚠️ ", "breakdown_below"),
+                          ("🔥", "rsi_overbought"), ("❄️", "rsi_oversold"),
+                          ("🌟", "golden_cross"), ("💀", "death_cross"),
+                          ("🔼", "kd_up"), ("📉", "breakdown_low"),
+                          ("🎯", "signal_burst"), ("🩸", "drawdown")]:
+            if msg.startswith(prefix):
+                kind = k; break
+        log.append({
+            "ts":    time.time(),
+            "code":  code,
+            "name":  name,
+            "price": float(price),
+            "kind":  kind,
+            "msg":   msg[:200],
+        })
+        # 只保留最近 500 筆
+        if len(log) > 500:
+            log = log[-500:]
+        save_json(ALERTS_LOG_FILE, log)
+    except Exception as e:
+        print(f"[alert_log] {e}")
 
 
 def alert_worker():
-    """背景每 5 分鐘掃描有設警示的股票。"""
+    """背景每 5 分鐘掃描有設警示的股票 + 每天檢查主題/族群輪動。"""
     print("[alert_worker] 啟動，每 5 分鐘檢查一次")
+    last_theme_scan = 0
     while True:
         time.sleep(300)
         try:
@@ -1324,14 +1357,99 @@ def alert_worker():
                     fetch_stock(code, force=True)  # 內部會 check_alert
                 except Exception as e:
                     print(f"[alert_worker] {code}: {e}")
+            # 每 24h 掃一次主題/族群 alert
+            if time.time() - last_theme_scan > 86400:
+                try:
+                    _scan_theme_group_alerts()
+                except Exception as e:
+                    print(f"[alert_worker theme] {e}")
+                last_theme_scan = time.time()
         except Exception as e:
             print(f"[alert_worker] {e}")
+
+
+# 主題/族群 alert 設定檔
+THEME_ALERTS_FILE = ROOT / "theme_alerts.json"
+
+
+def _scan_theme_group_alerts():
+    """每日掃描主題輪動、族群輪動,若達閾值就推 Telegram。
+    theme_alerts.json 結構:
+    {
+      "themes": {"資訊安全": {"ret_1w_above": 5, "ret_1m_above": 15}, ...},
+      "groups": {"GPU / 加速器": {"ret_1w_above": 8}, ...},
+      "_last_pushed": {"資訊安全:ret_1w_above:5": ts, ...}  // 去重 24h
+    }
+    """
+    cfg = load_json(THEME_ALERTS_FILE, {})
+    if not cfg.get("themes") and not cfg.get("groups"):
+        return
+    last_pushed = cfg.get("_last_pushed", {})
+    now_ts = time.time()
+    msgs = []
+
+    def _check(domain, rules, current_data):
+        nonlocal msgs
+        for key, thresholds in rules.items():
+            cur = next((x for x in current_data if x.get(domain) == key), None)
+            if not cur: continue
+            for rule, threshold in thresholds.items():
+                # rule 格式: ret_1w_above / ret_1m_above / momentum_above / ret_1w_below
+                parts = rule.rsplit("_", 1)
+                if len(parts) != 2: continue
+                metric, direction = parts
+                metric_val = cur.get(metric)
+                if metric_val is None: continue
+                trig = (direction == "above" and metric_val >= threshold) or \
+                       (direction == "below" and metric_val <= threshold)
+                if not trig: continue
+                dedup_key = f"{key}:{rule}:{threshold}"
+                if now_ts - last_pushed.get(dedup_key, 0) < 86400:
+                    continue  # 同一條 24h 不重複
+                arrow = "🚀" if direction == "above" else "⚠️"
+                msgs.append(f"{arrow} *{domain.upper()} {key}* — {metric} = *{metric_val:+.2f}%* "
+                           f"(觸發: {'≥' if direction == 'above' else '≤'} {threshold}%)")
+                last_pushed[dedup_key] = now_ts
+
+    try:
+        themes_data = api_theme_rotation()
+        _check("theme", cfg.get("themes", {}), themes_data)
+    except Exception as e:
+        print(f"[theme_alert] {e}")
+
+    try:
+        groups_data = api_group_rotation()
+        _check("group", cfg.get("groups", {}), groups_data)
+    except Exception as e:
+        print(f"[group_alert] {e}")
+
+    if msgs:
+        for m in msgs:
+            send_telegram(m)
+        cfg["_last_pushed"] = last_pushed
+        save_json(THEME_ALERTS_FILE, cfg)
+        print(f"[theme/group alert] 推送 {len(msgs)} 則")
 
 
 # ----------------------------------------------------------------------------
 # FastAPI app
 # ----------------------------------------------------------------------------
 app = FastAPI(title="美股情報站 API", version="1.0")
+
+
+@app.get("/api/theme-alerts")
+def api_get_theme_alerts():
+    return load_json(THEME_ALERTS_FILE, {"themes": {}, "groups": {}})
+
+
+@app.post("/api/theme-alerts")
+def api_set_theme_alerts(cfg: dict):
+    """payload: {"themes": {"資訊安全": {"ret_1w_above": 5}}, "groups": {...}}"""
+    existing = load_json(THEME_ALERTS_FILE, {})
+    existing["themes"] = cfg.get("themes", existing.get("themes", {}))
+    existing["groups"] = cfg.get("groups", existing.get("groups", {}))
+    save_json(THEME_ALERTS_FILE, existing)
+    return {"ok": True}
 
 # CORS：允許從 GitHub Pages、file://、其他主機載入的前端訪問本機 server
 app.add_middleware(
@@ -1936,6 +2054,93 @@ def api_del_alert(code: str):
     alerts.pop(code, None)
     save_json(ALERTS_FILE, alerts)
     return {"ok": True}
+
+
+@app.get("/api/alerts-log")
+def api_alerts_log(days: int = 30):
+    """過去 N 天觸發的警示 + 每筆 1d/5d/20d 後續走勢回顧。"""
+    cache_key = f"alerts_log:{days}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    log = load_json(ALERTS_LOG_FILE, [])
+    if not log:
+        return {"entries": [], "stats": {}, "asOf": str(pd.Timestamp.today().date())}
+    cutoff_ts = time.time() - days * 86400
+    recent = [e for e in log if e.get("ts", 0) >= cutoff_ts]
+    if not recent:
+        cache_set(cache_key, {"entries": [], "stats": {}, "asOf": str(pd.Timestamp.today().date())})
+        return _cache[cache_key][1]
+
+    # 批次抓所有相關代號的歷史價,算每筆觸發後 1d/5d/20d 報酬
+    wl = load_watchlist()
+    codes = sorted({e["code"] for e in recent if e["code"] in wl})
+    yf_codes = [wl[c]["yf"] for c in codes]
+    end = pd.Timestamp.today()
+    start = end - pd.Timedelta(days=days + 60)
+    closes = {}
+    if yf_codes:
+        try:
+            data = yf.download(yf_codes, start=start, end=end, auto_adjust=False,
+                               progress=False, group_by="ticker", threads=True)
+            for c, yfc in zip(codes, yf_codes):
+                try:
+                    closes[c] = data[yfc]["Close"].dropna() if len(yf_codes) > 1 else data["Close"].dropna()
+                except Exception:
+                    continue
+        except Exception as e:
+            print(f"[alerts_log yf] {e}")
+
+    out_entries = []
+    for e in reversed(recent):  # 新到舊
+        c = e["code"]
+        trigger_price = float(e.get("price", 0))
+        ts = e.get("ts", 0)
+        dt = pd.Timestamp(ts, unit="s")
+        ret_1d = ret_5d = ret_20d = None
+        c_series = closes.get(c)
+        if c_series is not None and len(c_series) > 0:
+            # 找觸發後的第一個收盤日
+            try:
+                after = c_series[c_series.index >= dt.tz_localize(None) if c_series.index.tz else c_series.index >= dt]
+                if len(after) >= 2:
+                    ret_1d = round((float(after.iloc[1]) - trigger_price) / trigger_price * 100, 2) if trigger_price else None
+                if len(after) >= 6:
+                    ret_5d = round((float(after.iloc[5]) - trigger_price) / trigger_price * 100, 2) if trigger_price else None
+                if len(after) >= 21:
+                    ret_20d = round((float(after.iloc[20]) - trigger_price) / trigger_price * 100, 2) if trigger_price else None
+            except Exception:
+                pass
+        out_entries.append({
+            "ts":       int(ts),
+            "date":     dt.strftime("%Y-%m-%d %H:%M"),
+            "code":     c,
+            "name":     e.get("name", c),
+            "price":    trigger_price,
+            "kind":     e.get("kind", "—"),
+            "msg":      e.get("msg", ""),
+            "ret_1d":   ret_1d,
+            "ret_5d":   ret_5d,
+            "ret_20d":  ret_20d,
+        })
+
+    # 統計各 kind 的勝率
+    stats = {}
+    for k in {x["kind"] for x in out_entries}:
+        same = [x for x in out_entries if x["kind"] == k]
+        wins_5d = sum(1 for x in same if x["ret_5d"] is not None and x["ret_5d"] > 0)
+        with_5d = sum(1 for x in same if x["ret_5d"] is not None)
+        avg_5d = round(sum(x["ret_5d"] for x in same if x["ret_5d"] is not None) / with_5d, 2) if with_5d else None
+        stats[k] = {
+            "n": len(same),
+            "win_rate_5d": round(wins_5d / with_5d * 100, 1) if with_5d else None,
+            "avg_5d":      avg_5d,
+        }
+
+    result = {"entries": out_entries, "stats": stats, "asOf": str(end.date())}
+    cache_set(cache_key, result)
+    return result
 
 
 # ----- Misc -----
@@ -2976,6 +3181,77 @@ def api_backtest(
     }
 
 
+@app.get("/api/backtest-oos")
+def api_backtest_oos(
+    strategy:    str   = "score",
+    start:       str   = "",
+    end:         str   = "",
+    capital:     float = 100_000.0,
+    hold_days:   int   = 5,
+    n_positions: int   = 5,
+    threshold:   float = 65,
+    group:       str   = "七巨頭",
+    universe:    str   = "watchlist",
+    train_ratio: float = 0.7,
+):
+    """Walk-forward 驗證:把時間切成 train_ratio (IS) / 1-train_ratio (OOS)
+    在 IS 跑一遍、OOS 跑一遍,比較 alpha/勝率 衰退幅度。
+    OOS 表現顯著差於 IS → 策略可能過擬合。"""
+    if not start:
+        start = (pd.Timestamp.today() - pd.Timedelta(days=730)).strftime("%Y-%m-%d")
+    if not end:
+        end = pd.Timestamp.today().strftime("%Y-%m-%d")
+
+    start_dt = pd.Timestamp(start)
+    end_dt   = pd.Timestamp(end)
+    split_dt = start_dt + (end_dt - start_dt) * train_ratio
+    is_end   = split_dt.strftime("%Y-%m-%d")
+    oos_start = split_dt.strftime("%Y-%m-%d")
+
+    kwargs = dict(strategy=strategy, capital=capital, hold_days=hold_days,
+                  n_positions=n_positions, threshold=threshold,
+                  group=group, universe=universe)
+
+    is_res  = api_backtest(start=start,    end=is_end,  **kwargs)
+    oos_res = api_backtest(start=oos_start, end=end,    **kwargs)
+
+    def _decay(a, b):
+        if a is None or b is None: return None
+        return round(b - a, 2)
+
+    is_s = is_res["summary"]
+    oos_s = oos_res["summary"]
+    health = "passed"
+    note = ""
+    # 過擬合判斷:OOS alpha << IS alpha 才算過擬合
+    is_alpha = is_s.get("alpha") or 0
+    oos_alpha = oos_s.get("alpha") or 0
+    if is_alpha > 20 and oos_alpha < is_alpha * 0.3:
+        health = "overfit"; note = f"OOS alpha 只剩 IS 的 {oos_alpha/is_alpha*100:.0f}%,疑似過擬合"
+    elif is_alpha > 0 and oos_alpha < 0:
+        health = "overfit"; note = f"IS 賺 OOS 賠,過擬合明顯"
+    elif oos_alpha >= is_alpha * 0.7:
+        health = "passed"; note = "OOS 與 IS 表現一致,策略穩健"
+    else:
+        health = "degraded"; note = "OOS 表現略差但可接受"
+
+    return {
+        "strategy":   strategy,
+        "split_date": split_dt.strftime("%Y-%m-%d"),
+        "train_ratio": train_ratio,
+        "in_sample":     is_res,
+        "out_of_sample": oos_res,
+        "decay": {
+            "total_return": _decay(is_s.get("total_return"), oos_s.get("total_return")),
+            "alpha":        _decay(is_s.get("alpha"),        oos_s.get("alpha")),
+            "win_rate":     _decay(is_s.get("win_rate"),     oos_s.get("win_rate")),
+            "max_drawdown": _decay(is_s.get("max_drawdown"), oos_s.get("max_drawdown")),
+        },
+        "health": health,
+        "note":   note,
+    }
+
+
 # ============================================================================
 # 主題輪動 (Theme Rotation) — 跨族群的主題標籤動量
 # ============================================================================
@@ -3264,6 +3540,241 @@ def api_insider_cluster(days: int = 30):
     out.sort(key=lambda x: -x["score"])
     cache_set(cache_key, out)
     return out
+
+
+# ============================================================================
+# 投組 Drawdown 曲線 — 每檔近 60d 從高點回檔軌跡
+# ============================================================================
+@app.get("/api/portfolio/drawdown-curve")
+def api_portfolio_drawdown(days: int = 60):
+    """從 portfolio.json 計算每檔近 N 天從滾動高點的 drawdown %。"""
+    cache_key = f"pf_dd:{days}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+    p = load_portfolio()
+    if not p:
+        return {"holdings": [], "asOf": str(pd.Timestamp.today().date())}
+    wl = load_watchlist()
+    # 依 code 聚合 (避免多筆同檔重複)
+    seen = {}
+    for h in p:
+        c = h.get("code")
+        if c and c not in seen and c in wl:
+            seen[c] = wl[c]["yf"]
+    codes = list(seen.keys())
+    yf_codes = [seen[c] for c in codes]
+    end = pd.Timestamp.today()
+    start = end - pd.Timedelta(days=days + 10)
+    try:
+        data = yf.download(yf_codes, start=start, end=end, auto_adjust=False,
+                           progress=False, group_by="ticker", threads=True)
+    except Exception as e:
+        raise HTTPException(503, f"yfinance fail: {e}")
+
+    out_holdings = []
+    for c, yfc in zip(codes, yf_codes):
+        try:
+            close = data[yfc]["Close"].dropna() if len(yf_codes) > 1 else data["Close"].dropna()
+            if len(close) < 5:
+                continue
+            close = close.iloc[-days:]
+            rolling_max = close.cummax()
+            dd_pct = ((close - rolling_max) / rolling_max * 100)
+            cur_dd = float(dd_pct.iloc[-1])
+            max_dd = float(dd_pct.min())
+            series = [
+                {"date": str(idx.date()), "price": round(float(p), 2),
+                 "peak": round(float(rolling_max.iloc[i]), 2),
+                 "dd_pct": round(float(dd_pct.iloc[i]), 2)}
+                for i, (idx, p) in enumerate(close.items())
+            ]
+            out_holdings.append({
+                "code":   c,
+                "name":   wl.get(c, {}).get("name", c),
+                "group":  wl.get(c, {}).get("group", "—"),
+                "cur_dd": round(cur_dd, 2),
+                "max_dd": round(max_dd, 2),
+                "current_price": round(float(close.iloc[-1]), 2),
+                "peak_price":    round(float(rolling_max.iloc[-1]), 2),
+                "series": series[-30:],  # 前端只渲染最近 30 個點
+            })
+        except Exception:
+            continue
+    # 按 cur_dd 由負到正排序 (最差先)
+    out_holdings.sort(key=lambda x: x["cur_dd"])
+    result = {"holdings": out_holdings, "asOf": str(end.date()), "days": days}
+    cache_set(cache_key, result)
+    return result
+
+
+# ============================================================================
+# 投組再平衡建議 — 給定目標權重,算出買賣動作
+# ============================================================================
+@app.get("/api/portfolio/rebalance")
+def api_portfolio_rebalance(by: str = "group"):
+    """依 group / theme / code 目標權重,算當前 vs 目標差異,給出再平衡建議。
+    by:
+      - group: 依板塊配比目標 (預設按現有比例,可由 rebalance_target.json 覆蓋)
+      - theme: 依主題配比
+      - code:  逐檔給目標
+    """
+    target_cfg = load_json(REBALANCE_TARGET_FILE, {})
+    p = load_portfolio()
+    if not p:
+        return {"holdings": [], "current": {}, "target": {}, "actions": [],
+                "by": by, "total_value": 0, "asOf": str(pd.Timestamp.today().date()),
+                "warnings": ["無持股資料"]}
+
+    wl = load_watchlist()
+    # 算每檔市值
+    holdings_value: dict[str, float] = {}
+    holdings_info: dict[str, dict] = {}
+    total_value = 0.0
+    for h in p:
+        c = h.get("code")
+        if not c: continue
+        try:
+            s = fetch_summary(c)
+            price = float(s["price"])
+        except Exception:
+            price = float(h.get("cost_price", 0))
+        shares = float(h.get("shares", 0))
+        v = shares * price
+        holdings_value[c] = holdings_value.get(c, 0) + v
+        holdings_info[c] = {
+            "name":   wl.get(c, {}).get("name", c),
+            "group":  wl.get(c, {}).get("group", "—"),
+            "themes": wl.get(c, {}).get("themes", []),
+            "price":  price,
+        }
+        total_value += v
+
+    if total_value <= 0:
+        return {"holdings": [], "actions": [], "by": by, "total_value": 0,
+                "warnings": ["持股總市值為 0"]}
+
+    # 算 current 分布
+    current: dict[str, float] = {}  # 群 → 市值
+    for c, v in holdings_value.items():
+        if by == "code":
+            current[c] = current.get(c, 0) + v
+        elif by == "theme":
+            ths = holdings_info[c].get("themes", []) or ["(無主題)"]
+            # 多主題均分權重
+            share = 1.0 / len(ths)
+            for t in ths:
+                current[t] = current.get(t, 0) + v * share
+        else:  # group
+            g = holdings_info[c].get("group", "—")
+            current[g] = current.get(g, 0) + v
+
+    # 取目標 (target_cfg by 對應的 key,若無則用 current 比例,並標記「無目標」)
+    target_pct = target_cfg.get(by, {})
+    using_default = False
+    if not target_pct:
+        # 預設:把當前實況作為目標,讓 user 知道沒設目標
+        target_pct = {k: v / total_value * 100 for k, v in current.items()}
+        using_default = True
+
+    # 正規化 target_pct (確保總和 100)
+    s = sum(target_pct.values())
+    if s > 0 and abs(s - 100) > 0.5:
+        target_pct = {k: v / s * 100 for k, v in target_pct.items()}
+
+    # 算 actions
+    actions = []
+    all_keys = set(current.keys()) | set(target_pct.keys())
+    for k in all_keys:
+        cur_v = current.get(k, 0)
+        cur_pct = cur_v / total_value * 100
+        tgt_pct = target_pct.get(k, 0)
+        delta_pct = tgt_pct - cur_pct
+        delta_v   = total_value * delta_pct / 100
+        if abs(delta_pct) < 0.5:
+            continue  # 差異 < 0.5% 略過
+        actions.append({
+            "key":         k,
+            "current_pct": round(cur_pct, 2),
+            "target_pct":  round(tgt_pct, 2),
+            "delta_pct":   round(delta_pct, 2),
+            "delta_value": round(delta_v, 2),
+            "action":      "買" if delta_v > 0 else "賣",
+        })
+    actions.sort(key=lambda x: -abs(x["delta_pct"]))
+
+    return {
+        "by":          by,
+        "total_value": round(total_value, 2),
+        "current":     {k: round(v / total_value * 100, 2) for k, v in current.items()},
+        "target":      {k: round(v, 2) for k, v in target_pct.items()},
+        "actions":     actions,
+        "using_default_target": using_default,
+        "warnings": ["未設目標,目前用「維持現狀」為目標。可編輯 rebalance_target.json 設定真實目標"]
+                    if using_default else [],
+        "asOf":        str(pd.Timestamp.today().date()),
+    }
+
+
+FIRSTRADE_SHARED = Path("d:/python/shared/firstrade_holdings.json")
+
+
+@app.post("/api/portfolio/import-firstrade")
+def api_import_firstrade(mode: str = "replace"):
+    """從 d:/python/shared/firstrade_holdings.json 匯入持倉到 portfolio.json。
+    mode:
+      - replace: 整個 portfolio.json 換成 firstrade 的快照 (預設)
+      - merge:   保留現有 + 加上 firstrade 新增 (用 code 比對,firstrade 為準)
+    """
+    if not FIRSTRADE_SHARED.exists():
+        raise HTTPException(404, f"找不到 {FIRSTRADE_SHARED}。請先在 Firstrade GUI 開啟「持倉查詢」")
+    try:
+        payload = json.loads(FIRSTRADE_SHARED.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(503, f"解析失敗: {e}")
+
+    lots = payload.get("lots", [])
+    ts   = payload.get("ts", 0)
+    age_hours = (time.time() - ts) / 3600 if ts else 999
+
+    new_pf = []
+    for i, lot in enumerate(lots):
+        code = (lot.get("code") or "").upper()
+        if not code: continue
+        new_pf.append({
+            "id":         f"ft_{int(ts)}_{i}",
+            "code":       code,
+            "shares":     float(lot.get("shares", 0)),
+            "cost_price": float(lot.get("cost_price", 0)),
+            "buy_date":   lot.get("buy_date", ""),
+            "note":       "imported from Firstrade",
+        })
+
+    if mode == "merge":
+        existing = load_portfolio()
+        # 用 code 去重:firstrade 為準
+        ft_codes = {p["code"] for p in new_pf}
+        keep = [h for h in existing if h.get("code") not in ft_codes]
+        new_pf = keep + new_pf
+
+    save_json(PORTFOLIO_FILE, new_pf)
+    _cache.pop("portfolio_risk", None)
+    return {
+        "ok": True, "imported": len(lots), "total_after": len(new_pf),
+        "mode": mode, "source_age_hours": round(age_hours, 1),
+    }
+
+
+@app.post("/api/portfolio/rebalance-target")
+def api_set_rebalance_target(target: dict):
+    """設定再平衡目標權重 (寫到 rebalance_target.json)。
+    payload 結構: { "group": { "AI 應用層": 20, ... }, "theme": { ... }, "code": { ... } }
+    """
+    cur = load_json(REBALANCE_TARGET_FILE, {})
+    for k, v in (target or {}).items():
+        cur[k] = v
+    save_json(REBALANCE_TARGET_FILE, cur)
+    return {"ok": True, "target": cur}
 
 
 # ============================================================================
