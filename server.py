@@ -81,10 +81,31 @@ DEFAULT_WATCHLIST: dict[str, dict[str, str]] = {
     # 記憶體
     "MU":    {"name": "Micron",       "tag": "記憶體 · DRAM / HBM",         "yf": "MU",    "group": "記憶體"},
 
-    # === 軟體 (Enterprise Software) ===
-    "PLTR":  {"name": "Palantir",     "tag": "AI SaaS / 數據分析",         "yf": "PLTR",  "group": "雲端 / SaaS"},
-    "CRM":   {"name": "Salesforce",   "tag": "雲端 CRM / Agentforce",      "yf": "CRM",   "group": "雲端 / SaaS"},
-    "CRWD":  {"name": "CrowdStrike",  "tag": "資訊安全 · 端點防護",        "yf": "CRWD",  "group": "資訊安全"},
+    # === 資訊安全 (Cybersecurity) ===
+    "CRWD":  {"name": "CrowdStrike",        "tag": "Cybersecurity · 端點防護",       "yf": "CRWD", "group": "資訊安全"},
+    "PANW":  {"name": "Palo Alto Networks", "tag": "Cybersecurity · Network/Cloud",  "yf": "PANW", "group": "資訊安全"},
+    "ZS":    {"name": "Zscaler",            "tag": "Cybersecurity · Zero Trust SASE","yf": "ZS",   "group": "資訊安全"},
+    "FTNT":  {"name": "Fortinet",           "tag": "Cybersecurity · 防火牆/SD-WAN",  "yf": "FTNT", "group": "資訊安全"},
+    "S":     {"name": "SentinelOne",        "tag": "Cybersecurity · AI 端點防護",    "yf": "S",    "group": "資訊安全"},
+    "RBRK":  {"name": "Rubrik",             "tag": "Cybersecurity · 資料安全/備份",  "yf": "RBRK", "group": "資訊安全"},
+
+    # === 雲基礎 / 開發者工具 (Cloud Infra / DevTools) ===
+    "SNOW":  {"name": "Snowflake",          "tag": "Data Cloud · Warehouse",          "yf": "SNOW", "group": "雲基礎 / 開發者工具"},
+    "DDOG":  {"name": "Datadog",            "tag": "Observability · APM/Log",         "yf": "DDOG", "group": "雲基礎 / 開發者工具"},
+    "NET":   {"name": "Cloudflare",         "tag": "Edge CDN · Zero Trust",           "yf": "NET",  "group": "雲基礎 / 開發者工具"},
+    "MDB":   {"name": "MongoDB",            "tag": "NoSQL DB · Atlas",                "yf": "MDB",  "group": "雲基礎 / 開發者工具"},
+
+    # === 企業軟體 / Vertical SaaS ===
+    "CRM":   {"name": "Salesforce",         "tag": "CRM / Sales Cloud",               "yf": "CRM",  "group": "企業軟體 / Vertical SaaS"},
+    "NOW":   {"name": "ServiceNow",         "tag": "Workflow Automation",             "yf": "NOW",  "group": "企業軟體 / Vertical SaaS"},
+    "WDAY":  {"name": "Workday",            "tag": "HR / Finance SaaS",               "yf": "WDAY", "group": "企業軟體 / Vertical SaaS"},
+    "ADBE":  {"name": "Adobe",              "tag": "Creative Cloud · 內容軟體",       "yf": "ADBE", "group": "企業軟體 / Vertical SaaS"},
+    "ORCL":  {"name": "Oracle",             "tag": "資料庫 / Oracle Cloud",           "yf": "ORCL", "group": "企業軟體 / Vertical SaaS"},
+
+    # === AI 應用層 ===
+    "PLTR":  {"name": "Palantir",           "tag": "AI 應用 · Gov/Enterprise",        "yf": "PLTR", "group": "AI 應用層"},
+    "AI":    {"name": "C3.ai",              "tag": "Enterprise AI Apps",              "yf": "AI",   "group": "AI 應用層"},
+    "SOUN":  {"name": "SoundHound AI",      "tag": "Voice AI · Auto/Restaurant",      "yf": "SOUN", "group": "AI 應用層"},
 
     # === EV / 其他 ===
     "AAPL":  {"name": "Apple",        "tag": "消費電子 · iPhone",          "yf": "AAPL",  "group": "消費電子"},
