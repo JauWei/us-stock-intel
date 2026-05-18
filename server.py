@@ -42,76 +42,170 @@ GEMINI_FILE    = ROOT / "gemini.json"
 # ----------------------------------------------------------------------------
 # Default watchlist (首次啟動時寫入 watchlist.json)
 # ----------------------------------------------------------------------------
-DEFAULT_WATCHLIST: dict[str, dict[str, str]] = {
+DEFAULT_WATCHLIST: dict[str, dict[str, Any]] = {
     # === AI 基礎設施 (Hardware Layer) ===
     # GPU / 加速器
-    "NVDA":  {"name": "NVIDIA",       "tag": "GPU · AI 訓練 / 推論",       "yf": "NVDA",  "group": "GPU / 加速器"},
-    "AMD":   {"name": "AMD",          "tag": "GPU / CPU · MI300X",         "yf": "AMD",   "group": "GPU / 加速器"},
+    "NVDA":  {"name": "NVIDIA",       "tag": "GPU · AI 訓練 / 推論",       "yf": "NVDA",  "group": "GPU / 加速器",
+             "themes": ["AI 加速器", "AI 模型基建", "Mag 7", "Fabless IC"]},
+    "AMD":   {"name": "AMD",          "tag": "GPU / CPU · MI300X",         "yf": "AMD",   "group": "GPU / 加速器",
+             "themes": ["AI 加速器", "Fabless IC"]},
 
     # 網路晶片 / Fabric
-    "AVGO":  {"name": "Broadcom",     "tag": "網通 · ASIC / 交換器",       "yf": "AVGO",  "group": "網路 Fabric"},
-    "MRVL":  {"name": "Marvell",      "tag": "資料中心 · DPU / 互連",      "yf": "MRVL",  "group": "網路 Fabric"},
-    "ANET":  {"name": "Arista",       "tag": "高速交換器 · 雲端網路",      "yf": "ANET",  "group": "網路 Fabric"},
+    "AVGO":  {"name": "Broadcom",     "tag": "網通 · ASIC / 交換器",       "yf": "AVGO",  "group": "網路 Fabric",
+             "themes": ["AI 加速器", "Fabless IC", "資訊安全"]},
+    "MRVL":  {"name": "Marvell",      "tag": "資料中心 · DPU / 互連",      "yf": "MRVL",  "group": "網路 Fabric",
+             "themes": ["AI 加速器", "Fabless IC"]},
+    "ANET":  {"name": "Arista",       "tag": "高速交換器 · 雲端網路",      "yf": "ANET",  "group": "網路 Fabric",
+             "themes": ["AI 模型基建"]},
 
     # 伺服器組裝
-    "SMCI":  {"name": "Super Micro",  "tag": "AI 伺服器 / 液冷整合",       "yf": "SMCI",  "group": "伺服器組裝"},
+    "SMCI":  {"name": "Super Micro",  "tag": "AI 伺服器 / 液冷整合",       "yf": "SMCI",  "group": "伺服器組裝",
+             "themes": ["AI 模型基建"]},
 
     # 電力 / 散熱 (AI 缺電題材)
-    "VRT":   {"name": "Vertiv",       "tag": "資料中心散熱 / UPS",         "yf": "VRT",   "group": "電力 / 散熱"},
-    "CEG":   {"name": "Constellation","tag": "核能電力 · AI 缺電題材",     "yf": "CEG",   "group": "電力 / 散熱"},
+    "VRT":   {"name": "Vertiv",       "tag": "資料中心散熱 / UPS",         "yf": "VRT",   "group": "電力 / 散熱",
+             "themes": ["AI 資料中心電力"]},
+    "CEG":   {"name": "Constellation","tag": "核能電力 · AI 缺電題材",     "yf": "CEG",   "group": "電力 / 散熱",
+             "themes": ["AI 資料中心電力", "核能"]},
+    "ETN":   {"name": "Eaton",        "tag": "電力管理 · 配電",            "yf": "ETN",   "group": "電力 / 散熱",
+             "themes": ["AI 資料中心電力", "工業"]},
+    "VST":   {"name": "Vistra",       "tag": "發電 · 天然氣/核能",         "yf": "VST",   "group": "電力 / 散熱",
+             "themes": ["AI 資料中心電力", "核能"]},
+    "EOSE":  {"name": "Eos Energy",   "tag": "儲能 · 鋅電池",              "yf": "EOSE",  "group": "電力 / 散熱",
+             "themes": ["儲能", "AI 資料中心電力"]},
 
     # Hyperscalers (買家層 / 資本支出端)
-    "MSFT":  {"name": "Microsoft",    "tag": "雲端 Azure / Copilot",        "yf": "MSFT",  "group": "Hyperscalers"},
-    "GOOGL": {"name": "Alphabet",     "tag": "搜尋 / 廣告 / GCP",           "yf": "GOOGL", "group": "Hyperscalers"},
-    "AMZN":  {"name": "Amazon",       "tag": "AWS / 電商",                  "yf": "AMZN",  "group": "Hyperscalers"},
-    "META":  {"name": "Meta",         "tag": "社群 / Llama / Reality Labs", "yf": "META",  "group": "Hyperscalers"},
+    "MSFT":  {"name": "Microsoft",    "tag": "雲端 Azure / Copilot",        "yf": "MSFT",  "group": "Hyperscalers",
+             "themes": ["雲三強", "Mag 7", "AI 模型", "企業軟體"]},
+    "GOOGL": {"name": "Alphabet",     "tag": "搜尋 / 廣告 / GCP",           "yf": "GOOGL", "group": "Hyperscalers",
+             "themes": ["雲三強", "Mag 7", "AI 模型", "自駕 / Robotaxi", "媒體 / 廣告"]},
+    "AMZN":  {"name": "Amazon",       "tag": "AWS / 電商",                  "yf": "AMZN",  "group": "Hyperscalers",
+             "themes": ["雲三強", "Mag 7", "電商 / 消費"]},
+    "META":  {"name": "Meta",         "tag": "社群 / Llama / Reality Labs", "yf": "META",  "group": "Hyperscalers",
+             "themes": ["Mag 7", "AI 模型", "媒體 / 廣告"]},
 
     # === 半導體循環 (Semiconductor Cycles) ===
     # 半導體設備 (WFE)
-    "ASML":  {"name": "ASML",         "tag": "微影設備 · EUV 壟斷",        "yf": "ASML",  "group": "半導體設備"},
-    "AMAT":  {"name": "Applied Mat.", "tag": "半導體設備 · 蝕刻沉積",      "yf": "AMAT",  "group": "半導體設備"},
+    "ASML":  {"name": "ASML",         "tag": "微影設備 · EUV 壟斷",        "yf": "ASML",  "group": "半導體設備",
+             "themes": ["半導體設備"]},
+    "AMAT":  {"name": "Applied Mat.", "tag": "半導體設備 · 蝕刻沉積",      "yf": "AMAT",  "group": "半導體設備",
+             "themes": ["半導體設備"]},
+    "LRCX":  {"name": "Lam Research", "tag": "半導體設備 · 蝕刻龍頭",      "yf": "LRCX",  "group": "半導體設備",
+             "themes": ["半導體設備"]},
+    "KLAC":  {"name": "KLA Corp",     "tag": "半導體檢測 / 量測",          "yf": "KLAC",  "group": "半導體設備",
+             "themes": ["半導體設備"]},
 
     # 晶圓代工
-    "TSM":   {"name": "TSMC ADR",     "tag": "晶圓代工 · 全球領導",        "yf": "TSM",   "group": "晶圓代工"},
+    "TSM":   {"name": "TSMC ADR",     "tag": "晶圓代工 · 全球領導",        "yf": "TSM",   "group": "晶圓代工",
+             "themes": ["AI 加速器", "半導體代工"]},
 
     # IC 設計
-    "QCOM":  {"name": "Qualcomm",     "tag": "手機 SoC / 5G",               "yf": "QCOM",  "group": "IC 設計"},
-    "ARM":   {"name": "Arm Holdings", "tag": "IP / 矽智財",                 "yf": "ARM",   "group": "IC 設計"},
+    "QCOM":  {"name": "Qualcomm",     "tag": "手機 SoC / 5G",               "yf": "QCOM",  "group": "IC 設計",
+             "themes": ["Fabless IC"]},
+    "ARM":   {"name": "Arm Holdings", "tag": "IP / 矽智財",                 "yf": "ARM",   "group": "IC 設計",
+             "themes": ["Fabless IC", "AI 加速器"]},
 
     # 記憶體
-    "MU":    {"name": "Micron",       "tag": "記憶體 · DRAM / HBM",         "yf": "MU",    "group": "記憶體"},
+    "MU":    {"name": "Micron",       "tag": "記憶體 · DRAM / HBM",         "yf": "MU",    "group": "記憶體",
+             "themes": ["AI 模型基建"]},
+
+    # EDA / IP 工具
+    "SNPS":  {"name": "Synopsys",     "tag": "EDA · 晶片設計工具",          "yf": "SNPS",  "group": "EDA / IP 工具",
+             "themes": ["半導體設計"]},
+    "CDNS":  {"name": "Cadence",      "tag": "EDA · 矽智財 / 模擬",         "yf": "CDNS",  "group": "EDA / IP 工具",
+             "themes": ["半導體設計"]},
 
     # === 資訊安全 (Cybersecurity) ===
-    "CRWD":  {"name": "CrowdStrike",        "tag": "Cybersecurity · 端點防護",       "yf": "CRWD", "group": "資訊安全"},
-    "PANW":  {"name": "Palo Alto Networks", "tag": "Cybersecurity · Network/Cloud",  "yf": "PANW", "group": "資訊安全"},
-    "ZS":    {"name": "Zscaler",            "tag": "Cybersecurity · Zero Trust SASE","yf": "ZS",   "group": "資訊安全"},
-    "FTNT":  {"name": "Fortinet",           "tag": "Cybersecurity · 防火牆/SD-WAN",  "yf": "FTNT", "group": "資訊安全"},
-    "S":     {"name": "SentinelOne",        "tag": "Cybersecurity · AI 端點防護",    "yf": "S",    "group": "資訊安全"},
-    "RBRK":  {"name": "Rubrik",             "tag": "Cybersecurity · 資料安全/備份",  "yf": "RBRK", "group": "資訊安全"},
+    "CRWD":  {"name": "CrowdStrike",        "tag": "Cybersecurity · 端點防護",       "yf": "CRWD", "group": "資訊安全",
+             "themes": ["資訊安全", "AI 應用"]},
+    "PANW":  {"name": "Palo Alto Networks", "tag": "Cybersecurity · Network/Cloud",  "yf": "PANW", "group": "資訊安全",
+             "themes": ["資訊安全"]},
+    "ZS":    {"name": "Zscaler",            "tag": "Cybersecurity · Zero Trust SASE","yf": "ZS",   "group": "資訊安全",
+             "themes": ["資訊安全"]},
+    "FTNT":  {"name": "Fortinet",           "tag": "Cybersecurity · 防火牆/SD-WAN",  "yf": "FTNT", "group": "資訊安全",
+             "themes": ["資訊安全"]},
+    "S":     {"name": "SentinelOne",        "tag": "Cybersecurity · AI 端點防護",    "yf": "S",    "group": "資訊安全",
+             "themes": ["資訊安全", "AI 應用"]},
+    "RBRK":  {"name": "Rubrik",             "tag": "Cybersecurity · 資料安全/備份",  "yf": "RBRK", "group": "資訊安全",
+             "themes": ["資訊安全"]},
 
     # === 雲基礎 / 開發者工具 (Cloud Infra / DevTools) ===
-    "SNOW":  {"name": "Snowflake",          "tag": "Data Cloud · Warehouse",          "yf": "SNOW", "group": "雲基礎 / 開發者工具"},
-    "DDOG":  {"name": "Datadog",            "tag": "Observability · APM/Log",         "yf": "DDOG", "group": "雲基礎 / 開發者工具"},
-    "NET":   {"name": "Cloudflare",         "tag": "Edge CDN · Zero Trust",           "yf": "NET",  "group": "雲基礎 / 開發者工具"},
-    "MDB":   {"name": "MongoDB",            "tag": "NoSQL DB · Atlas",                "yf": "MDB",  "group": "雲基礎 / 開發者工具"},
+    "SNOW":  {"name": "Snowflake",          "tag": "Data Cloud · Warehouse",          "yf": "SNOW", "group": "雲基礎 / 開發者工具",
+             "themes": ["AI 模型基建", "企業軟體"]},
+    "DDOG":  {"name": "Datadog",            "tag": "Observability · APM/Log",         "yf": "DDOG", "group": "雲基礎 / 開發者工具",
+             "themes": ["企業軟體"]},
+    "NET":   {"name": "Cloudflare",         "tag": "Edge CDN · Zero Trust",           "yf": "NET",  "group": "雲基礎 / 開發者工具",
+             "themes": ["資訊安全", "企業軟體"]},
+    "MDB":   {"name": "MongoDB",            "tag": "NoSQL DB · Atlas",                "yf": "MDB",  "group": "雲基礎 / 開發者工具",
+             "themes": ["企業軟體"]},
 
     # === 企業軟體 / Vertical SaaS ===
-    "CRM":   {"name": "Salesforce",         "tag": "CRM / Sales Cloud",               "yf": "CRM",  "group": "企業軟體 / Vertical SaaS"},
-    "NOW":   {"name": "ServiceNow",         "tag": "Workflow Automation",             "yf": "NOW",  "group": "企業軟體 / Vertical SaaS"},
-    "WDAY":  {"name": "Workday",            "tag": "HR / Finance SaaS",               "yf": "WDAY", "group": "企業軟體 / Vertical SaaS"},
-    "ADBE":  {"name": "Adobe",              "tag": "Creative Cloud · 內容軟體",       "yf": "ADBE", "group": "企業軟體 / Vertical SaaS"},
-    "ORCL":  {"name": "Oracle",             "tag": "資料庫 / Oracle Cloud",           "yf": "ORCL", "group": "企業軟體 / Vertical SaaS"},
+    "CRM":   {"name": "Salesforce",         "tag": "CRM / Sales Cloud",               "yf": "CRM",  "group": "企業軟體 / Vertical SaaS",
+             "themes": ["企業軟體", "AI 應用"]},
+    "NOW":   {"name": "ServiceNow",         "tag": "Workflow Automation",             "yf": "NOW",  "group": "企業軟體 / Vertical SaaS",
+             "themes": ["企業軟體", "AI 應用"]},
+    "WDAY":  {"name": "Workday",            "tag": "HR / Finance SaaS",               "yf": "WDAY", "group": "企業軟體 / Vertical SaaS",
+             "themes": ["企業軟體"]},
+    "ADBE":  {"name": "Adobe",              "tag": "Creative Cloud · 內容軟體",       "yf": "ADBE", "group": "企業軟體 / Vertical SaaS",
+             "themes": ["企業軟體", "AI 應用"]},
+    "ORCL":  {"name": "Oracle",             "tag": "資料庫 / Oracle Cloud",           "yf": "ORCL", "group": "企業軟體 / Vertical SaaS",
+             "themes": ["企業軟體", "AI 模型基建"]},
+    "FIG":   {"name": "Figma",              "tag": "設計協作 SaaS",                   "yf": "FIG",  "group": "企業軟體 / Vertical SaaS",
+             "themes": ["企業軟體"]},
 
     # === AI 應用層 ===
-    "PLTR":  {"name": "Palantir",           "tag": "AI 應用 · Gov/Enterprise",        "yf": "PLTR", "group": "AI 應用層"},
-    "AI":    {"name": "C3.ai",              "tag": "Enterprise AI Apps",              "yf": "AI",   "group": "AI 應用層"},
-    "SOUN":  {"name": "SoundHound AI",      "tag": "Voice AI · Auto/Restaurant",      "yf": "SOUN", "group": "AI 應用層"},
+    "PLTR":  {"name": "Palantir",           "tag": "AI 應用 · Gov/Enterprise",        "yf": "PLTR", "group": "AI 應用層",
+             "themes": ["AI 應用", "政府 / 國防", "企業軟體"]},
+    "AI":    {"name": "C3.ai",              "tag": "Enterprise AI Apps",              "yf": "AI",   "group": "AI 應用層",
+             "themes": ["AI 應用", "企業軟體"]},
+    "SOUN":  {"name": "SoundHound AI",      "tag": "Voice AI · Auto/Restaurant",      "yf": "SOUN", "group": "AI 應用層",
+             "themes": ["AI 應用"]},
 
-    # === EV / 其他 ===
-    "AAPL":  {"name": "Apple",        "tag": "消費電子 · iPhone",          "yf": "AAPL",  "group": "消費電子"},
-    "TSLA":  {"name": "Tesla",        "tag": "EV / 自駕 / Robotaxi",       "yf": "TSLA",  "group": "EV / 自駕"},
-    "NFLX":  {"name": "Netflix",      "tag": "流媒體",                      "yf": "NFLX",  "group": "其他"},
-    "JPM":   {"name": "JPMorgan",     "tag": "金融 · 銀行",                "yf": "JPM",   "group": "其他"},
+    # === EV / 自駕 ===
+    "TSLA":  {"name": "Tesla",        "tag": "EV / 自駕 / Robotaxi",       "yf": "TSLA",  "group": "EV / 自駕",
+             "themes": ["EV", "自駕 / Robotaxi", "Mag 7", "AI 應用", "儲能"]},
+
+    # === 消費電子 ===
+    "AAPL":  {"name": "Apple",        "tag": "消費電子 · iPhone",          "yf": "AAPL",  "group": "消費電子",
+             "themes": ["Mag 7", "Fabless IC"]},
+
+    # === 媒體 / 串流 ===
+    "NFLX":  {"name": "Netflix",      "tag": "串流媒體",                    "yf": "NFLX",  "group": "媒體 / 串流",
+             "themes": ["媒體 / 廣告"]},
+
+    # === 金融 ===
+    "JPM":   {"name": "JPMorgan",     "tag": "大型銀行",                    "yf": "JPM",   "group": "金融 / 銀行",
+             "themes": ["金融"]},
+
+    # === 金融科技 (Fintech) ===
+    "SOFI":  {"name": "SoFi",         "tag": "Fintech · 數位銀行",          "yf": "SOFI",  "group": "金融科技",
+             "themes": ["金融", "AI 應用"]},
+
+    # === 太空 / 國防 ===
+    "ASTS":  {"name": "AST SpaceMobile", "tag": "衛星 · 直連手機",          "yf": "ASTS",  "group": "太空 / 國防",
+             "themes": ["太空 / 衛星", "政府 / 國防"]},
+
+    # === 餐飲 / 消費 ===
+    "CAVA":  {"name": "Cava Group",   "tag": "地中海連鎖快餐",              "yf": "CAVA",  "group": "餐飲 / 消費",
+             "themes": ["消費"]},
+
+    # === 油氣 / 能源服務 ===
+    "TTI":   {"name": "Tetra Tech.",  "tag": "能源服務 · 油氣/水管理",      "yf": "TTI",   "group": "能源 / 油氣",
+             "themes": ["能源"]},
+
+    # === 大盤 ETF ===
+    "IVV":   {"name": "iShares S&P 500", "tag": "S&P 500 ETF",              "yf": "IVV",   "group": "大盤 ETF",
+             "themes": ["大盤指數"]},
+    "QQQ":   {"name": "Invesco QQQ",     "tag": "Nasdaq-100 ETF",           "yf": "QQQ",   "group": "大盤 ETF",
+             "themes": ["大盤指數"]},
+    "VTI":   {"name": "Vanguard Total",  "tag": "全市場 ETF",                "yf": "VTI",   "group": "大盤 ETF",
+             "themes": ["大盤指數"]},
+
+    # === 特殊 ETF / 投資工具 ===
+    "DXYZ":  {"name": "Destiny Tech100", "tag": "Pre-IPO 科技基金",         "yf": "DXYZ",  "group": "特殊 ETF / 投資工具",
+             "themes": []},
+    "TSLR":  {"name": "Defiance 2x TSLA","tag": "TSLA 2x 槓桿 ETF",          "yf": "TSLR",  "group": "特殊 ETF / 投資工具",
+             "themes": ["EV"]},
 }
 
 CACHE_TTL = 300
@@ -148,25 +242,33 @@ def save_json(p: Path, data: Any) -> None:
 
 
 def _migrate_watchlist_groups(wl: dict) -> dict:
-    """套用 DEFAULT_WATCHLIST 的最新族群分類到既有清單。
+    """套用 DEFAULT_WATCHLIST 的最新族群分類 + themes 到既有清單。
     規則：
-    - 既有代號若在 DEFAULT 內，更新 group / tag 為新版（族群細分）
-    - 既有代號不在 DEFAULT 內（user 自行加的，例如「持股」群組）→ 保留不動
-    - DEFAULT 有但既有清單沒有 → 不自動加入
+    - 既有代號若在 DEFAULT 內，更新 group / tag / themes 為新版
+    - 既有代號不在 DEFAULT 內（user 自行加的）→ 保留 group/tag，themes 預設空
     """
     changed = False
     for code, default_meta in DEFAULT_WATCHLIST.items():
         if code in wl:
             cur = wl[code]
-            if cur.get("group") != default_meta["group"] or cur.get("tag") != default_meta["tag"]:
-                cur["group"] = default_meta["group"]
-                cur["tag"]   = default_meta["tag"]
+            default_themes = default_meta.get("themes", [])
+            if (cur.get("group") != default_meta["group"]
+                or cur.get("tag") != default_meta["tag"]
+                or cur.get("themes") != default_themes):
+                cur["group"]  = default_meta["group"]
+                cur["tag"]    = default_meta["tag"]
+                cur["themes"] = list(default_themes)
                 if not cur.get("name"):
                     cur["name"] = default_meta["name"]
                 changed = True
+    # 確保 user 自加的也有 themes 欄位 (預設 [])
+    for code, cur in wl.items():
+        if "themes" not in cur:
+            cur["themes"] = []
+            changed = True
     if changed:
         save_json(WATCHLIST_FILE, wl)
-        print(f"[migrate] watchlist 族群分類已套用最新版")
+        print(f"[migrate] watchlist 分類 + themes 已套用最新版")
     return wl
 
 
@@ -502,6 +604,7 @@ def fetch_stock(code: str, period: str = "D", force: bool = False) -> dict:
         "name":   info["name"],
         "tag":    info["tag"],
         "group":  info.get("group", "自選"),
+        "themes": info.get("themes", []) or [],
         "period": period,
         "price":   round(price, 2),
         "prev":    round(prev_close, 2),
@@ -1275,6 +1378,7 @@ def fetch_summary(code: str) -> dict:
         "name":   info["name"],
         "tag":    info["tag"],
         "group":  info.get("group", "自選"),
+        "themes": info.get("themes", []) or [],
         "price":  round(last, 2),
         "prev":   round(prev, 2),
         "asOf":   str(hist.index[-1].date()),
@@ -2829,6 +2933,80 @@ def api_backtest(
         "equity_curve": ec_ds,
         "trades": trades[-100:],
     }
+
+
+# ============================================================================
+# 主題輪動 (Theme Rotation) — 跨族群的主題標籤動量
+# ============================================================================
+@app.get("/api/theme-rotation")
+def api_theme_rotation():
+    """主題輪動:依 themes 標籤聚合,計算每主題 1W/1M/3M 平均報酬 + 動量。
+    一檔股票可屬多主題,所以同一檔可能出現在多個主題的成員裡。"""
+    cache_key = "theme_rotation:90d"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    wl = load_watchlist()
+    codes = list(wl.keys())
+    yf_codes = [wl[c]["yf"] for c in codes]
+    end = pd.Timestamp.today()
+    start = end - pd.Timedelta(days=120)
+    try:
+        data = yf.download(yf_codes, start=start, end=end, auto_adjust=False,
+                           progress=False, group_by="ticker", threads=True)
+    except Exception as e:
+        raise HTTPException(503, f"yfinance batch fail: {e}")
+
+    closes = pd.DataFrame()
+    for c, yfc in zip(codes, yf_codes):
+        try:
+            col = data[yfc]["Close"] if len(yf_codes) > 1 else data["Close"]
+            closes[c] = col
+        except Exception:
+            continue
+    closes = closes.dropna(how="all")
+    if len(closes) < 30:
+        raise HTTPException(503, "資料不足")
+
+    def n_day_ret(n):
+        if len(closes) < n + 1: return {}
+        return ((closes.iloc[-1] - closes.iloc[-n-1]) / closes.iloc[-n-1] * 100).to_dict()
+
+    ret_1w = n_day_ret(5)
+    ret_1m = n_day_ret(20)
+    ret_3m = n_day_ret(60) if len(closes) >= 61 else {}
+
+    # 聚合 themes → 成員
+    by_theme: dict[str, list[str]] = {}
+    for code in closes.columns:
+        for t in wl.get(code, {}).get("themes", []) or []:
+            by_theme.setdefault(t, []).append(code)
+
+    from statistics import mean as _mean
+    out = []
+    for t, members in by_theme.items():
+        if len(members) < 2:  # 單一成員主題沒意義
+            continue
+        def clean(d):
+            return [v for v in (d.get(c) for c in members) if v is not None and not pd.isna(v)]
+        r1w_v, r1m_v, r3m_v = clean(ret_1w), clean(ret_1m), clean(ret_3m)
+        r1w = _mean(r1w_v) if r1w_v else 0
+        r1m = _mean(r1m_v) if r1m_v else 0
+        r3m = _mean(r3m_v) if r3m_v else 0
+        momentum = round(r1w - (r1m / 4), 2) if r1m_v and r1w_v else 0
+        out.append({
+            "theme":  t,
+            "n":      len(members),
+            "ret_1w": round(r1w, 2),
+            "ret_1m": round(r1m, 2),
+            "ret_3m": round(r3m, 2),
+            "momentum": momentum,
+            "members": members,
+        })
+    out.sort(key=lambda x: -x["momentum"])
+    cache_set(cache_key, out)
+    return out
 
 
 # ============================================================================

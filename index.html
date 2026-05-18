@@ -345,6 +345,16 @@
   .stock-name { font-size: 30px; font-weight: 800; }
   .stock-code { color: var(--yellow); font-size: 22px; font-weight: 700; }
   .stock-tag { font-size: 12px; color: var(--muted); padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg-2); }
+  .stock-themes { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+  .stock-themes .theme-chip {
+    font-size: 10px; padding: 2px 7px; border-radius: 999px;
+    background: rgba(0,229,255,0.08); color: var(--cyan);
+    border: 1px solid rgba(0,229,255,0.3); letter-spacing: 0.5px;
+  }
+  .stock-themes .theme-chip:hover { background: rgba(0,229,255,0.2); cursor: pointer; }
+  /* 主題輪動 view */
+  .theme-view { display: none; }
+  .theme-view.show { display: block; }
   .price-row { display: flex; align-items: center; gap: 18px; margin: 14px 0 6px; }
   .price { font-size: 56px; font-weight: 800; line-height: 1; letter-spacing: 1px; }
   .price.up { color: var(--red); text-shadow: 0 0 30px rgba(239,68,68,0.35); }
@@ -956,6 +966,7 @@
       <div class="opt" data-view="risk">⚖️ 風險</div>
       <div class="opt" data-view="hilo">🎯 52週</div>
       <div class="opt" data-view="cluster">🐳 群聚</div>
+      <div class="opt" data-view="theme">🎨 主題輪動</div>
       <div class="opt" data-view="bt">📈 回測</div>
     </div>
   </div>
@@ -975,6 +986,7 @@
         <div class="stock-code" id="stockCode">2383</div>
         <div class="stock-tag" id="stockTag">電子中游 · PCB-材料設備</div>
       </div>
+      <div class="stock-themes" id="stockThemes" style="display:none;"></div>
       <div class="price-row">
         <div class="price up" id="price">4440.00</div>
         <div class="change up" id="change">
@@ -1496,6 +1508,18 @@
       <span style="font-size:12px; color:var(--muted);">建立 / 跌破 / 接近新高 — 量能 ≥ 1.3x 平均更具動能</span>
     </div>
     <div id="hiloContent">
+      <div style="color:var(--muted);text-align:center;padding:40px;">⏳ 載入中…</div>
+    </div>
+  </div>
+
+  <!-- ===== THEME ROTATION VIEW ===== -->
+  <div class="theme-view" id="themeView">
+    <div class="rank-controls">
+      <span style="color:var(--magenta); font-weight:700; letter-spacing:2px;">🎨 主題輪動</span>
+      <span class="spacer" style="flex:0 0 12px;"></span>
+      <span style="font-size:12px; color:var(--muted);">跨族群聚合 · 同一檔可屬多主題 · 動量 = 1W − 1M/4</span>
+    </div>
+    <div id="themeContent">
       <div style="color:var(--muted);text-align:center;padding:40px;">⏳ 載入中…</div>
     </div>
   </div>
@@ -2062,6 +2086,7 @@ function switchView(v) {
   document.getElementById("riskView").classList.toggle("show", v === "risk");
   document.getElementById("hiloView").classList.toggle("show", v === "hilo");
   document.getElementById("clusterView").classList.toggle("show", v === "cluster");
+  document.getElementById("themeView").classList.toggle("show", v === "theme");
   document.getElementById("btView").classList.toggle("show", v === "bt");
 
   if (v === "rank")         loadRanking();
@@ -2072,6 +2097,7 @@ function switchView(v) {
   else if (v === "risk")    loadRisk();
   else if (v === "hilo")    loadHiLo();
   else if (v === "cluster") loadCluster();
+  else if (v === "theme")   loadTheme();
   else if (v === "bt")      initBtView();
   else if (state.activeCode) loadStock(state.activeCode);
 }
@@ -2156,6 +2182,77 @@ async function loadHiLo() {
     `;
     el.querySelectorAll(".hilo-card").forEach(c => {
       c.addEventListener("click", () => {
+        state.activeCode = c.dataset.code;
+        switchView("stock");
+        loadStock(state.activeCode);
+      });
+    });
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red);text-align:center;padding:40px;">⚠️ ${e.message}</div>`;
+  }
+}
+
+/* =========================================================================
+ * Theme Rotation — 跨族群主題輪動
+ * ======================================================================= */
+async function loadTheme() {
+  const el = document.getElementById("themeContent");
+  el.innerHTML = `<div style="color:var(--muted);text-align:center;padding:40px;">⏳ 載入中 (聚合 watchlist 所有主題,約 10-30 秒)…</div>`;
+  try {
+    const data = await apiGet("/api/theme-rotation", 90000);
+    if (!data || data.length === 0) {
+      el.innerHTML = `<div style="color:var(--muted);text-align:center;padding:40px;">📭 無主題資料</div>`;
+      return;
+    }
+    const vmax = Math.max(...data.map(t => Math.abs(t.momentum || 0)));
+    const fmtPct = (v) => {
+      if (v == null) return '<span style="color:var(--muted);">—</span>';
+      const cls = v >= 0 ? 'var(--red)' : 'var(--green)';
+      return `<span style="color:${cls};">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</span>`;
+    };
+    const momBar = (v) => {
+      if (v == null) return '—';
+      const pct = Math.min(100, Math.abs(v) / (vmax || 1) * 100);
+      const c = v >= 0 ? 'var(--green)' : 'var(--red)';
+      return `<div style="display:inline-flex;align-items:center;gap:6px;">
+        <span style="display:inline-block;width:60px;height:6px;background:var(--bg-2);border-radius:3px;position:relative;">
+          <span style="position:absolute;top:0;left:0;height:100%;width:${pct}%;background:${c};border-radius:3px;"></span>
+        </span>
+        <span style="font-variant-numeric:tabular-nums;color:${v >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:600;">${v >= 0 ? '+' : ''}${v.toFixed(2)}</span>
+      </div>`;
+    };
+    el.innerHTML = `
+      <div style="overflow-x:auto;">
+        <table class="rank-table">
+          <thead>
+            <tr>
+              <th>排名</th><th>主題</th><th>成員</th>
+              <th>1 週</th><th>1 月</th><th>3 月</th>
+              <th>動量</th>
+              <th style="min-width:300px;">成員清單</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.map((t, i) => `
+              <tr data-theme="${t.theme}">
+                <td><span class="rank-num ${i===0?'gold':i===1?'silver':i===2?'bronze':'normal'}">${i+1}</span></td>
+                <td><strong style="color:var(--magenta);">${t.theme}</strong></td>
+                <td style="color:var(--muted);">${t.n}</td>
+                <td>${fmtPct(t.ret_1w)}</td>
+                <td>${fmtPct(t.ret_1m)}</td>
+                <td>${fmtPct(t.ret_3m)}</td>
+                <td>${momBar(t.momentum)}</td>
+                <td style="font-size:11px;">
+                  ${t.members.map(m => `<span class="theme-chip" style="margin:1px 2px;display:inline-block;cursor:pointer;" data-code="${m}">${m}</span>`).join("")}
+                </td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>`;
+    el.querySelectorAll("[data-code]").forEach(c => {
+      c.addEventListener("click", (ev) => {
+        ev.stopPropagation();
         state.activeCode = c.dataset.code;
         switchView("stock");
         loadStock(state.activeCode);
@@ -2595,6 +2692,26 @@ async function loadStock(code) {
   document.getElementById("stockName").textContent = s.name;
   document.getElementById("stockCode").textContent = s.code;
   document.getElementById("stockTag").textContent = s.tag;
+
+  // themes chips
+  const themesEl = document.getElementById("stockThemes");
+  const themes = s.themes || [];
+  if (themes.length > 0) {
+    themesEl.innerHTML = themes.map(t => `<span class="theme-chip" data-theme="${t}">${t}</span>`).join("");
+    themesEl.style.display = "flex";
+    themesEl.querySelectorAll(".theme-chip").forEach(c => {
+      c.addEventListener("click", () => {
+        switchView("theme");
+        // 滾到對應的主題
+        setTimeout(() => {
+          const target = document.querySelector(`#themeContent [data-theme="${c.dataset.theme}"]`);
+          if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 600);
+      });
+    });
+  } else {
+    themesEl.style.display = "none";
+  }
 
   const priceEl = document.getElementById("price");
   const changeEl = document.getElementById("change");
