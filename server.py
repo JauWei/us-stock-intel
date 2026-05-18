@@ -39,10 +39,14 @@ TELEGRAM_FILE  = ROOT / "telegram.json"
 PORTFOLIO_FILE = ROOT / "portfolio.json"
 GEMINI_FILE    = ROOT / "gemini.json"
 
+# 共用分類檔 — 跨專案 (firstrade_gui_plus 等也讀同一份)
+SHARED_CLASSIFICATION = Path("d:/python/shared/stock_classification.json")
+
 # ----------------------------------------------------------------------------
 # Default watchlist (首次啟動時寫入 watchlist.json)
+# 優先讀 d:/python/shared/stock_classification.json,讀不到再用下方內建
 # ----------------------------------------------------------------------------
-DEFAULT_WATCHLIST: dict[str, dict[str, Any]] = {
+_BUILTIN_WATCHLIST: dict[str, dict[str, Any]] = {
     # === AI 基礎設施 (Hardware Layer) ===
     # GPU / 加速器
     "NVDA":  {"name": "NVIDIA",       "tag": "GPU · AI 訓練 / 推論",       "yf": "NVDA",  "group": "GPU / 加速器",
@@ -207,6 +211,25 @@ DEFAULT_WATCHLIST: dict[str, dict[str, Any]] = {
     "TSLR":  {"name": "Defiance 2x TSLA","tag": "TSLA 2x 槓桿 ETF",          "yf": "TSLR",  "group": "特殊 ETF / 投資工具",
              "themes": ["EV"]},
 }
+
+
+def _load_default_watchlist() -> dict[str, dict[str, Any]]:
+    """優先讀 d:/python/shared/stock_classification.json,失敗 fallback 內建。"""
+    if SHARED_CLASSIFICATION.exists():
+        try:
+            data = json.loads(SHARED_CLASSIFICATION.read_text(encoding="utf-8"))
+            # 確保每一檔有必要欄位
+            for code, m in data.items():
+                m.setdefault("yf", code)
+                m.setdefault("themes", [])
+            print(f"[init] 已從 {SHARED_CLASSIFICATION} 載入 {len(data)} 檔股票分類")
+            return data
+        except Exception as e:
+            print(f"[init] {SHARED_CLASSIFICATION} 讀取失敗,改用內建: {e}")
+    return _BUILTIN_WATCHLIST
+
+
+DEFAULT_WATCHLIST: dict[str, dict[str, Any]] = _load_default_watchlist()
 
 CACHE_TTL = 300
 _cache: dict[str, tuple[float, Any]] = {}
