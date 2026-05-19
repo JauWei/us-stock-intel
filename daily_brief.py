@@ -14,7 +14,9 @@
 from __future__ import annotations
 import json
 import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -24,6 +26,43 @@ ROOT = Path(__file__).resolve().parent
 TELE_FILE = ROOT / "telegram.json"
 SERVER_URL = os.environ.get("US_INTEL_URL", "http://localhost:18506")
 TIMEOUT = 30
+
+
+def ensure_server_running(max_wait: int = 60) -> bool:
+    """確保 server.py 已啟動。沒有就在背景啟動並等就緒。"""
+    try:
+        r = requests.get(f"{SERVER_URL}/api/stocks", timeout=5)
+        if r.status_code == 200:
+            return True
+    except Exception:
+        pass
+    server_py = ROOT / "server.py"
+    if not server_py.exists():
+        return False
+    pythonw = Path(sys.executable).parent / "pythonw.exe"
+    py_exe = str(pythonw) if pythonw.exists() else sys.executable
+    try:
+        subprocess.Popen(
+            [py_exe, str(server_py)],
+            cwd=str(ROOT),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) |
+                          getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        )
+        print(f"[ensure_server] 已啟動 server.py, 等待 ready…")
+    except Exception as e:
+        print(f"[ensure_server] 啟動失敗: {e}")
+        return False
+    for i in range(max_wait):
+        time.sleep(1)
+        try:
+            r = requests.get(f"{SERVER_URL}/api/stocks", timeout=3)
+            if r.status_code == 200:
+                print(f"[ensure_server] server 在 {i+1}s 後就緒")
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def load_telegram():
@@ -167,6 +206,9 @@ def main():
     if not load_telegram():
         print("[daily_brief] telegram.json 沒設,放棄")
         sys.exit(0)
+    if not ensure_server_running():
+        send_telegram("⚠️ *美股早報失敗* — 無法啟動 server,請檢查")
+        sys.exit(1)
 
     now = datetime.now()
     header = f"☀️ *美股早報 — {now.strftime('%m/%d %A')}*\n"
