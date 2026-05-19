@@ -85,12 +85,14 @@ def send_telegram(text: str) -> bool:
     if not token or not chat:
         print("[weekly_report] telegram.json 未設定")
         return False
+    plain = text.replace("*", "").replace("_", "")
     try:
         r = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat, "text": text, "parse_mode": "Markdown",
-                  "disable_web_page_preview": True},
+            json={"chat_id": chat, "text": plain, "disable_web_page_preview": True},
             timeout=10)
+        if r.status_code != 200:
+            print(f"[weekly_report] telegram {r.status_code}: {r.text[:200]}")
         return r.status_code == 200
     except Exception as e:
         print(f"[weekly_report] tg fail: {e}")
