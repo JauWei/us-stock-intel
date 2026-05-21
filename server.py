@@ -4124,22 +4124,21 @@ def api_quote(code: str):
 # ============================================================================
 @app.get("/api/earnings-calendar")
 def api_earnings_calendar(days: int = 30):
-    """未來 N 天 watchlist 財報日 + 近 4 季 EPS beat/miss。"""
+    """未來 N 天 watchlist 財報日 + 近 4 季 EPS beat/miss。
+    用 ThreadPoolExecutor 並行抓 yfinance,cache 6 小時 (財報一天變一次)。"""
     cache_key = f"earnings_cal:{days}"
     cached = cache_get(cache_key)
     if cached:
         return cached
 
     wl = load_watchlist()
-    out = []
     today = pd.Timestamp.today().normalize()
-    horizon = today + pd.Timedelta(days=days)
 
-    for code, info in wl.items():
+    def _fetch_one(code_info):
+        code, info = code_info
         yf_code = info.get("yf", code)
         try:
             t = yf.Ticker(yf_code)
-            # 下次財報日
             next_date = None
             try:
                 cal = t.calendar
@@ -4152,16 +4151,12 @@ def api_earnings_calendar(days: int = 30):
                 elif cal is not None and hasattr(cal, "loc"):
                     try:
                         ed = cal.loc["Earnings Date"]
-                        if hasattr(ed, "iloc"):
-                            next_date = pd.Timestamp(ed.iloc[0])
-                        else:
-                            next_date = pd.Timestamp(ed)
+                        next_date = pd.Timestamp(ed.iloc[0] if hasattr(ed, "iloc") else ed)
                     except Exception:
                         pass
             except Exception:
                 pass
 
-            # 歷史 EPS 紀錄
             history = []
             try:
                 ed = t.earnings_dates
@@ -4198,11 +4193,17 @@ def api_earnings_calendar(days: int = 30):
                 "days_to":      days_to,
                 "history":      history,
             }
-            # 過濾：未來 days 內、或還是想看過去歷史的都保留
             if days_to is None or 0 <= days_to <= days or len(history) > 0:
-                out.append(entry)
+                return entry
         except Exception as e:
             print(f"[earnings] {code}: {e}")
+        return None
+
+    from concurrent.futures import ThreadPoolExecutor
+    out = []
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        for r in ex.map(_fetch_one, list(wl.items())):
+            if r: out.append(r)
 
     # 排序：有日期的擺前面 by days_to，無日期的擺後面但有 history
     def _sort_key(x):
@@ -4212,7 +4213,7 @@ def api_earnings_calendar(days: int = 30):
         return (0, d)
     out.sort(key=_sort_key)
 
-    cache_set(cache_key, out)
+    cache_set_ttl(cache_key, out, 21600)  # 6 小時 — 財報日一天變一次
     return out
 
 
