@@ -355,6 +355,9 @@
   /* 主題輪動 view */
   .theme-view { display: none; }
   .theme-view.show { display: block; }
+  /* 警示紀錄 view */
+  .alertlog-view { display: none; }
+  .alertlog-view.show { display: block; }
   .price-row { display: flex; align-items: center; gap: 18px; margin: 14px 0 6px; }
   .price { font-size: 56px; font-weight: 800; line-height: 1; letter-spacing: 1px; }
   .price.up { color: var(--red); text-shadow: 0 0 30px rgba(239,68,68,0.35); }
@@ -1444,8 +1447,10 @@
       <span class="spacer" style="flex:0 0 12px;"></span>
       <span style="font-size:12px; color:var(--muted);">資料儲存於 portfolio.json</span>
       <span class="spacer"></span>
+      <button class="btn" id="btnPfRefresh" title="清快取後重抓即時價">🔄 重新整理</button>
       <button class="btn primary" id="btnAddHolding">➕ 新增持股</button>
     </div>
+    <div id="pfRefreshStatus" style="font-size:11px;color:var(--muted);margin-top:-6px;margin-bottom:6px;text-align:right;"></div>
 
     <div class="pf-summary" id="pfSummary">
       <div class="cell"><div class="label">總成本</div><div class="value">—</div></div>
@@ -3390,6 +3395,7 @@ function bindToolbar() {
   document.getElementById("btnRemove").addEventListener("click", () => removeCurrentStock());
   document.getElementById("btnGenAi").addEventListener("click", () => generateAiComment());
   document.getElementById("btnAddHolding").addEventListener("click", () => openModal("holdingModal"));
+  document.getElementById("btnPfRefresh")?.addEventListener("click", refreshPortfolio);
   document.getElementById("btnBtRun").addEventListener("click", runBacktest);
   document.getElementById("btnBtOos")?.addEventListener("click", runBacktestOos);
   document.getElementById("btnLoadOpt")?.addEventListener("click", loadOptions);
@@ -3698,6 +3704,26 @@ async function loadHeatmap() {
 /* =========================================================================
  * Portfolio
  * ======================================================================= */
+async function refreshPortfolio() {
+  const stat = document.getElementById("pfRefreshStatus");
+  const btn = document.getElementById("btnPfRefresh");
+  if (btn) btn.disabled = true;
+  if (stat) stat.innerHTML = "🔄 清快取 + 重抓即時價…";
+  try {
+    await apiGet("/api/refresh", 30000).catch(()=>{});
+    await loadPortfolio();
+    if (stat) {
+      const now = new Date();
+      stat.innerHTML = `✅ 已更新 (${now.getHours()}:${String(now.getMinutes()).padStart(2,"0")}:${String(now.getSeconds()).padStart(2,"0")})`;
+      setTimeout(() => { if (stat) stat.innerHTML = ""; }, 5000);
+    }
+  } catch (e) {
+    if (stat) stat.innerHTML = `<span style="color:var(--red);">⚠️ ${e.message}</span>`;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function loadPortfolio() {
   try {
     const data = await apiGet("/api/portfolio", 30000);
