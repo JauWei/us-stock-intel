@@ -187,6 +187,25 @@ def section_overnight_movers() -> str:
     return "\n".join(lines) + "\n"
 
 
+def section_profit_taking() -> str:
+    """停利警示 — 持股 ≥ 2 條件命中才推"""
+    try:
+        scan = api("/api/profit-taking-scan", 60)
+    except Exception:
+        return ""
+    warns = [w for w in scan.get("warnings", []) if w.get("hits", 0) >= 2]
+    if not warns:
+        return ""
+    lines = ["", "⚠️ *持倉停利警示*"]
+    for w in warns[:5]:
+        icon = "🚨" if w["level"] == "critical" else "⚠️"
+        lines.append(f"  {icon} *{w['code']}* ({w['hits']}/3 條件) — {w['action']}")
+        for cat, reasons in w.get("conditions", {}).items():
+            if reasons:
+                lines.append(f"    · {cat}: {', '.join(reasons)}")
+    return "\n".join(lines) + "\n"
+
+
 def section_squeeze() -> str:
     """軋空 Top 3 (高分才推)"""
     try:
@@ -218,6 +237,7 @@ def main():
     body = "\n".join([
         header,
         section_macro(),
+        section_profit_taking(),
         section_earnings(),
         section_overnight_movers(),
         section_squeeze(),

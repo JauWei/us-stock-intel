@@ -3716,6 +3716,136 @@ def api_portfolio_rebalance(by: str = "group"):
     }
 
 
+# ============================================================================
+# 停利掃描 — 偵測「拉升過快 + 籌碼散 + 支撐脆弱」三條件
+# ============================================================================
+@app.get("/api/profit-taking-scan")
+def api_profit_taking_scan():
+    """掃 portfolio holdings,偵測該停利的 3 個條件:
+    A. 拉升過快: RSI > 70 OR 乖離 > 12% OR ret_5d > 8%
+    B. 籌碼散: insider 淨 < -$1M OR Top10 < 30% (僅看美股大型股)
+    C. 支撐脆弱: 跌破 MA20 OR Drawdown > -5%
+    回傳每檔的 (條件命中數, 細節, 建議動作)。
+    """
+    cache_key = "profit_taking_scan"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    p = load_portfolio()
+    if not p:
+        return {"scanned": 0, "warnings": [], "asOf": str(pd.Timestamp.today().date())}
+
+    wl = load_watchlist()
+    seen_codes = set()
+    out = []
+    for h in p:
+        code = h.get("code")
+        if not code or code in seen_codes or code not in wl:
+            continue
+        seen_codes.add(code)
+        try:
+            d = fetch_stock(code)
+        except Exception:
+            continue
+
+        price = d["price"]; prev = d["prev"]
+        rsi = d["rsi"]
+        ma20 = d.get("ma20") or 0
+        bias = ((price - ma20) / ma20 * 100) if ma20 else 0
+        # 算 ret_5d 簡單版 (close 5 天前比現價)
+        klines = d.get("klines", [])
+        ret_5d = None
+        if len(klines) >= 6:
+            p_5d_ago = klines[-6]["ohlc"][1]
+            if p_5d_ago:
+                ret_5d = (price - p_5d_ago) / p_5d_ago * 100
+
+        # === Condition A: 拉升過快 ===
+        cond_a_reasons = []
+        if rsi > 70:           cond_a_reasons.append(f"RSI {rsi:.0f} 過熱")
+        if bias > 12:          cond_a_reasons.append(f"乖離 +{bias:.1f}%")
+        if ret_5d and ret_5d > 8: cond_a_reasons.append(f"5日 +{ret_5d:.1f}%")
+        cond_a = len(cond_a_reasons) > 0
+
+        # === Condition B: 籌碼散 ===
+        cond_b_reasons = []
+        try:
+            ins = fetch_insider(code, days=180)
+            net = ins.get("summary", {}).get("net_value", 0)
+            if net <= -1_000_000:
+                cond_b_reasons.append(f"內部人 6M 淨賣 ${abs(net)/1e6:.1f}M")
+        except Exception:
+            pass
+        try:
+            ih = fetch_institutional_holders(code)
+            isum = ih.get("summary", {})
+            top10 = isum.get("top10_pct", 0)
+            if top10 and top10 < 30:
+                cond_b_reasons.append(f"Top10 集中度只 {top10}%")
+        except Exception:
+            pass
+        cond_b = len(cond_b_reasons) > 0
+
+        # === Condition C: 支撐脆弱 ===
+        cond_c_reasons = []
+        if ma20 and price < ma20:
+            cond_c_reasons.append(f"跌破 MA20 (${ma20:.2f})")
+        # drawdown from 60d high
+        closes = [k["ohlc"][1] for k in klines if k.get("ohlc")]
+        if len(closes) >= 20:
+            peak = max(closes)
+            dd = (price - peak) / peak * 100 if peak else 0
+            if dd <= -5:
+                cond_c_reasons.append(f"距高點 {dd:.1f}% (${peak:.2f}→${price:.2f})")
+        cond_c = len(cond_c_reasons) > 0
+
+        hits = sum([cond_a, cond_b, cond_c])
+        if hits == 0:
+            continue  # 完全沒事的不列出
+
+        # 建議動作
+        if hits >= 3:
+            action = "減碼 50%"; level = "critical"
+        elif hits == 2:
+            action = "收緊移動停利 (8% → 5%)"; level = "warning"
+        else:
+            action = "警示觀察,不動作"; level = "watch"
+
+        out.append({
+            "code":   code,
+            "name":   wl.get(code, {}).get("name", code),
+            "group":  wl.get(code, {}).get("group", "—"),
+            "price":  price,
+            "rsi":    round(rsi, 1),
+            "bias":   round(bias, 2),
+            "ret_5d": round(ret_5d, 2) if ret_5d is not None else None,
+            "hits":   hits,
+            "level":  level,
+            "action": action,
+            "conditions": {
+                "拉升過快": cond_a_reasons,
+                "籌碼散":   cond_b_reasons,
+                "支撐脆弱": cond_c_reasons,
+            },
+        })
+
+    # 危險先排
+    level_order = {"critical": 0, "warning": 1, "watch": 2}
+    out.sort(key=lambda x: (level_order.get(x["level"], 9), -x["hits"]))
+
+    result = {
+        "scanned": len(seen_codes),
+        "warnings": out,
+        "asOf": str(pd.Timestamp.today().date()),
+        "critical_count": sum(1 for x in out if x["level"] == "critical"),
+        "warning_count":  sum(1 for x in out if x["level"] == "warning"),
+        "watch_count":    sum(1 for x in out if x["level"] == "watch"),
+    }
+    cache_set_ttl(cache_key, result, 1800)  # 30 分鐘 cache
+    return result
+
+
 FIRSTRADE_SHARED = Path("d:/python/shared/firstrade_holdings.json")
 
 

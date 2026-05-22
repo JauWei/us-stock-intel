@@ -3743,9 +3743,81 @@ async function loadPortfolio() {
     pctEl.style.color = data.summary.total_pnl_pct >= 0 ? "var(--red)" : "var(--green)";
 
     renderPortfolioTable();
+    _renderProfitTakingScan();
   } catch (e) {
     document.querySelector("#pfTable tbody").innerHTML =
       `<tr><td colspan="12" style="color:var(--red);">載入失敗: ${e.message}</td></tr>`;
+  }
+}
+
+async function _renderProfitTakingScan() {
+  /* 在持股 view 加停利警示掃描 */
+  let box = document.getElementById("pfProfitScan");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "pfProfitScan";
+    box.style.marginTop = "14px";
+    document.getElementById("pfView").appendChild(box);
+  }
+  box.innerHTML = `<div style="color:var(--muted);padding:10px;font-size:11px;">⏳ 掃描停利條件…</div>`;
+  try {
+    const d = await apiGet("/api/profit-taking-scan", 90000);
+    const warns = d.warnings || [];
+    if (warns.length === 0) {
+      box.innerHTML = `<div class="panel" style="margin-bottom:0;">
+        <div class="panel-title"><span class="dot" style="background:var(--green);"></span>✅ 停利掃描 — 持股無停利訊號</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:6px;">掃 ${d.scanned} 檔,沒有命中拉升過快/籌碼散/支撐脆弱任一條件</div>
+      </div>`;
+      return;
+    }
+    const levelColor = { critical: "var(--red)", warning: "var(--orange)", watch: "var(--yellow)" };
+    const levelIcon  = { critical: "🚨", warning: "⚠️", watch: "👀" };
+    const cntStr = `${d.critical_count} critical / ${d.warning_count} warning / ${d.watch_count} watch`;
+    box.innerHTML = `<div class="panel" style="margin-bottom:0;">
+      <div class="panel-title">
+        <span class="dot" style="background:var(--red);box-shadow:0 0 10px var(--red);"></span>
+        ⚠️ 停利警示掃描
+        <span class="small">${cntStr}</span>
+      </div>
+      <table style="width:100%;font-size:12px;margin-top:10px;">
+        <thead><tr style="border-bottom:1px solid var(--line);color:var(--muted);">
+          <th style="text-align:left;padding:6px;">等級</th>
+          <th style="padding:6px;">代號</th>
+          <th style="padding:6px;">族群</th>
+          <th style="padding:6px;">命中</th>
+          <th style="padding:6px;">建議動作</th>
+          <th style="padding:6px;text-align:left;">原因</th>
+        </tr></thead>
+        <tbody>${warns.map(w => {
+          const col = levelColor[w.level] || "var(--muted)";
+          const ic = levelIcon[w.level] || "·";
+          const reasons = Object.entries(w.conditions || {})
+            .filter(([_, rs]) => rs.length > 0)
+            .map(([cat, rs]) => `<div style="font-size:10px;"><b style="color:${col};">${cat}:</b> ${rs.join(", ")}</div>`)
+            .join("");
+          return `<tr data-code="${w.code}" style="cursor:pointer;">
+            <td style="padding:6px;color:${col};font-weight:700;">${ic} ${w.level}</td>
+            <td style="padding:6px;color:var(--cyan);font-weight:600;">${w.code}</td>
+            <td style="padding:6px;font-size:11px;color:var(--muted);">${w.group}</td>
+            <td style="padding:6px;font-weight:700;color:${col};">${w.hits}/3</td>
+            <td style="padding:6px;font-weight:600;">${w.action}</td>
+            <td style="padding:6px;">${reasons}</td>
+          </tr>`;
+        }).join("")}</tbody>
+      </table>
+      <div style="font-size:10px;color:var(--muted);margin-top:8px;">
+        🚨 3/3 = 強烈停利 · ⚠️ 2/3 = 收緊停利 · 👀 1/3 = 觀察。30 分鐘 cache,按「🔄 重新整理」可強制重算
+      </div>
+    </div>`;
+    box.querySelectorAll("tr[data-code]").forEach(tr => {
+      tr.addEventListener("click", () => {
+        state.activeCode = tr.dataset.code;
+        switchView("stock");
+        loadStock(state.activeCode);
+      });
+    });
+  } catch (e) {
+    box.innerHTML = `<div style="font-size:11px;color:var(--red);padding:10px;">⚠️ 停利掃描失敗: ${e.message}</div>`;
   }
 }
 
