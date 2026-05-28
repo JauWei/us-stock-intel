@@ -1670,10 +1670,46 @@ SCORE_WEIGHT_PRESETS = {
 _SCORE_WEIGHTS = SCORE_WEIGHT_PRESETS["balanced"]  # 全域，由 api_ranking 設定
 
 
+def _detect_market_regime() -> tuple[str, str]:
+    """偵測市場 regime,回 (prefab 名稱, 說明)。
+    動能盤 → momentum 權重;防禦盤 → value;其餘 → balanced。
+    用 /api/breadth 的 watchlist 寬度 + 大盤動量判斷。"""
+    try:
+        b = api_breadth()
+    except Exception:
+        return "balanced", "無法判斷,用均衡"
+    pct20 = b.get("pct_above_50", 50)   # > MA20 比例
+    pct60 = b.get("pct_above_200", 50)  # > MA60 比例
+    ad    = b.get("ad_ratio", 1)
+    spy_chg = b.get("spy_change") or 0
+
+    # 動能盤:廣度健康 + 多數股在均線上
+    if pct20 >= 60 and pct60 >= 55:
+        return "momentum", f"動能盤 (>{pct20:.0f}% 在 MA20 上, A/D {ad})"
+    # 防禦盤:廣度差 / 普遍弱勢
+    if pct20 < 40 or pct60 < 40:
+        return "value", f"防禦盤 (僅 {pct20:.0f}% 在 MA20 上)"
+    return "balanced", f"均衡盤 ({pct20:.0f}% 在 MA20 上)"
+
+
+@app.get("/api/market-regime")
+def api_market_regime():
+    """回傳目前市場 regime 與對應建議權重。"""
+    prefab, note = _detect_market_regime()
+    label = {"momentum": "🚀 動能盤", "value": "🛡️ 防禦盤", "balanced": "⚖️ 均衡盤"}.get(prefab, prefab)
+    return {"regime": prefab, "label": label, "note": note,
+            "suggest_weights": prefab}
+
+
 @app.get("/api/ranking")
 def api_ranking(by: str = "change", weights: str = "balanced"):
     global _SCORE_WEIGHTS
-    _SCORE_WEIGHTS = SCORE_WEIGHT_PRESETS.get(weights, SCORE_WEIGHT_PRESETS["balanced"])
+    regime_note = ""
+    if weights == "auto":
+        prefab, regime_note = _detect_market_regime()
+        _SCORE_WEIGHTS = SCORE_WEIGHT_PRESETS.get(prefab, SCORE_WEIGHT_PRESETS["balanced"])
+    else:
+        _SCORE_WEIGHTS = SCORE_WEIGHT_PRESETS.get(weights, SCORE_WEIGHT_PRESETS["balanced"])
     """熱度榜排序：
     - change / down: 漲幅 / 跌幅
     - volume:        成交量
@@ -2842,6 +2878,7 @@ def api_backtest(
       group          – 都買指定族群
       hot_group      – 都買當日漲幅最高的族群
       score          – 多因子綜合評分 top N (MA20 + RSI + 動能 + 量能)
+      score_adaptive – regime 自適應評分:每日偵測動能/防禦/均衡盤,自動換權重
       golden_cross   – MA5 上穿 MA20 進場,死叉出場 (覆蓋 hold_days)
       rsi_oversold   – RSI < threshold 且 MA5>MA20 進場,RSI > 60 出場
       new_high       – 創 60 日新高 + 量能 > 1.3x 均量 進場
@@ -2967,6 +3004,77 @@ def api_backtest(
                 if ret5 > 3: sc += 10
                 if ret20 > 8: sc += 12
                 elif ret20 < -10: sc -= 15
+                picks.append((c, sc))
+            picks.sort(key=lambda x: -x[1])
+            return [p[0] for p in picks[:n_positions] if p[1] >= 15]
+
+        if strategy == "score_adaptive":
+            # 先偵測市場 regime (只用過去資料,無未來偷看)
+            # 1) 全體股票橫斷面: 平均 20 日報酬 + 站上 MA20 的比例 (breadth)
+            rets20, above_ma20 = [], 0
+            n_valid = 0
+            for c in closes.columns:
+                hist = closes[c].iloc[:day_idx+1].dropna()
+                if len(hist) < 21: continue
+                n_valid += 1
+                r20 = (hist.iloc[-1] - hist.iloc[-21]) / hist.iloc[-21] * 100
+                rets20.append(r20)
+                if hist.iloc[-1] > hist.iloc[-20:].mean():
+                    above_ma20 += 1
+            if n_valid < 5:
+                return []
+            avg_ret20 = sum(rets20) / len(rets20)
+            breadth = above_ma20 / n_valid * 100
+
+            # 2) 判 regime
+            if breadth >= 60 and avg_ret20 > 3:
+                regime = "momentum"      # 廣度健康 + 普漲 → 動能盤
+            elif breadth < 40 or avg_ret20 < -3:
+                regime = "defensive"     # 廣度差 / 普跌 → 防禦盤
+            else:
+                regime = "balanced"
+
+            # 3) 依 regime 給不同權重
+            picks = []
+            for c in closes.columns:
+                hist = closes[c].iloc[:day_idx+1].dropna()
+                if len(hist) < 21: continue
+                ma5  = hist.iloc[-5:].mean()
+                ma20 = hist.iloc[-20:].mean()
+                cur  = hist.iloc[-1]
+                delta = hist.diff().iloc[-14:].dropna()
+                gain = delta[delta > 0].sum(); loss = -delta[delta < 0].sum()
+                rsi = 100 - 100/(1 + (gain/loss)) if loss > 0 else 100
+                ret5  = (cur - hist.iloc[-6]) / hist.iloc[-6] * 100
+                ret20 = (cur - hist.iloc[-21]) / hist.iloc[-21] * 100
+                sc = 0
+                if regime == "momentum":
+                    # 動能盤: 重 ret / 趨勢,輕均值回歸
+                    if ma5 > ma20: sc += 20
+                    else: sc -= 15
+                    if cur > ma20: sc += 12
+                    if ret5 > 3: sc += 18
+                    if ret20 > 8: sc += 22
+                    elif ret20 < -5: sc -= 10
+                    if rsi > 80: sc -= 8       # 只有極端過熱才扣 (動能盤容許高 RSI)
+                elif regime == "defensive":
+                    # 防禦盤: 重均值回歸 / 超賣反彈,避免追高
+                    if rsi < 30: sc += 25       # 超賣大加分
+                    elif rsi < 40: sc += 12
+                    elif rsi > 70: sc -= 20      # 過熱重扣
+                    if ma5 > ma20: sc += 8       # 趨勢仍給小分
+                    if ret20 < -15: sc += 10     # 跌深反彈候選
+                    elif ret20 > 10: sc -= 8     # 漲多回吐風險
+                else:  # balanced
+                    if ma5 > ma20: sc += 15
+                    else: sc -= 10
+                    if cur > ma20: sc += 10
+                    if 40 <= rsi <= 70: sc += 10
+                    elif rsi > 75: sc -= 15
+                    elif rsi < 30: sc += 8
+                    if ret5 > 3: sc += 10
+                    if ret20 > 8: sc += 12
+                    elif ret20 < -10: sc -= 15
                 picks.append((c, sc))
             picks.sort(key=lambda x: -x[1])
             return [p[0] for p in picks[:n_positions] if p[1] >= 15]
@@ -4537,7 +4645,12 @@ def root():
 
 # ----------------------------------------------------------------------------
 if __name__ == "__main__":
-    import sys, io
+    import sys, io, os
+    if sys.stdout is None:
+        # pythonw.exe 背景模式下 stdout/stderr 為 None，重導到 log 檔避免 print/reconfigure 崩潰
+        _log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.log")
+        sys.stdout = open(_log_path, "a", encoding="utf-8", buffering=1)
+        sys.stderr = sys.stdout
     try:
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")

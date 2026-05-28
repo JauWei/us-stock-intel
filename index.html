@@ -1408,11 +1408,13 @@
       </div>
       <label style="font-size:12px; color:var(--muted); margin-left:8px;">權重</label>
       <select id="rankWeights" style="padding:5px 10px; background:var(--bg-2); color:var(--text); border:1px solid var(--line); border-radius:8px; font-size:12px;">
+        <option value="auto">🧠 自動 (依市場 regime)</option>
         <option value="balanced">均衡 (Balanced)</option>
         <option value="value">💎 價值派</option>
         <option value="momentum">🚀 動能派</option>
         <option value="chip">🐋 籌碼派</option>
       </select>
+      <span style="font-size:11px; color:var(--cyan);" id="regimeNote"></span>
       <span class="spacer"></span>
       <span style="font-size:12px; color:var(--muted);" id="rankCount">—</span>
     </div>
@@ -1617,6 +1619,7 @@
         <option value="group">都買指定族群</option>
         <option value="hot_group">都買當日最熱族群</option>
         <option value="score">🎯 多因子綜合評分 top N</option>
+        <option value="score_adaptive">🧠 自適應評分 (regime 自動換權重)</option>
         <option value="golden_cross">🌟 黃金交叉進場</option>
         <option value="rsi_oversold">❄️ RSI 超賣反彈 (&lt; N)</option>
         <option value="new_high">🚀 60日新高突破 + 量爆</option>
@@ -3291,6 +3294,14 @@ async function loadRanking(by = "score") {
   tbody.innerHTML = `<tr><td colspan="14" style="padding:30px; color:var(--muted);">📡 載入中（首次抓 13F + 估值約 15-40 秒）...</td></tr>`;
   try {
     const w = document.getElementById("rankWeights")?.value || "balanced";
+    const noteEl = document.getElementById("regimeNote");
+    if (w === "auto" && noteEl) {
+      apiGet("/api/market-regime", 30000).then(r => {
+        noteEl.textContent = `→ ${r.label} (${r.note})`;
+      }).catch(() => { noteEl.textContent = ""; });
+    } else if (noteEl) {
+      noteEl.textContent = "";
+    }
     const items = await apiGet(`/api/ranking?by=${by}&weights=${w}`, 90000);
     document.getElementById("rankCount").textContent = items.length + " 檔";
     tbody.innerHTML = items.map((r, i) => {
