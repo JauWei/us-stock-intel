@@ -215,17 +215,27 @@ _BUILTIN_WATCHLIST: dict[str, dict[str, Any]] = {
 }
 
 
+def _is_tw_symbol(code: str, meta: dict) -> bool:
+    """台股代號（純數字 / .TW / .TWO）。美股站要過濾掉。"""
+    c = str(code).upper().strip()
+    yf = str(meta.get("yf", "")).upper()
+    return c.isdigit() or c.endswith(".TW") or c.endswith(".TWO") or yf.endswith(".TW") or yf.endswith(".TWO")
+
+
 def _load_default_watchlist() -> dict[str, dict[str, Any]]:
-    """優先讀 d:/python/shared/stock_classification.json,失敗 fallback 內建。"""
+    """優先讀 d:/python/shared/stock_classification.json,失敗 fallback 內建。
+
+    shared 檔自 2026-05-29 起含台股；美股站只取美股，過濾掉台股代號。
+    """
     if SHARED_CLASSIFICATION.exists():
         try:
             data = json.loads(SHARED_CLASSIFICATION.read_text(encoding="utf-8"))
-            # 確保每一檔有必要欄位
-            for code, m in data.items():
+            us_only = {c: m for c, m in data.items() if isinstance(m, dict) and not _is_tw_symbol(c, m)}
+            for code, m in us_only.items():
                 m.setdefault("yf", code)
                 m.setdefault("themes", [])
-            print(f"[init] 已從 {SHARED_CLASSIFICATION} 載入 {len(data)} 檔股票分類")
-            return data
+            print(f"[init] 已從 {SHARED_CLASSIFICATION} 載入 {len(us_only)} 檔美股分類（已過濾台股）")
+            return us_only
         except Exception as e:
             print(f"[init] {SHARED_CLASSIFICATION} 讀取失敗,改用內建: {e}")
     return _BUILTIN_WATCHLIST
