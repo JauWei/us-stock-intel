@@ -3138,6 +3138,44 @@ async function renderKline(s) {
   ];
   const legendData = ["K線", "MA5", "MA20", "MA60"];
 
+  // ── 持有成本標註：若此檔在 portfolio 內，K 線疊一條水平虛線 ──
+  try {
+    if (!Array.isArray(state._pfHoldings)) {
+      try {
+        const pf = await apiGet("/api/portfolio", 10000);
+        state._pfHoldings = pf.holdings || [];
+      } catch (e) { state._pfHoldings = []; }
+    }
+    const code = (state.activeCode || "").toUpperCase();
+    const holding = state._pfHoldings.find(h => (h.code || "").toUpperCase() === code);
+    const cost = holding && +holding.cost_price;
+    if (cost > 0 && klines.length > 0) {
+      const lastClose = klines[klines.length - 1].ohlc[1];
+      const pct = (lastClose - cost) / cost * 100;
+      const above = lastClose >= cost;
+      // 美股 / 此 dashboard 沿用 ef4444=漲(紅) 22c55e=跌(綠)
+      const bg = above ? "rgba(239,68,68,0.88)" : "rgba(34,197,94,0.88)";
+      series[0].markLine = {
+        symbol: ["none", "none"],
+        animation: false,
+        data: [{
+          yAxis: cost,
+          lineStyle: { color: "#f59e0b", type: "dashed", width: 2, opacity: 0.95 },
+          label: {
+            formatter: `成本 $${cost.toFixed(2)} (${above ? "+" : ""}${pct.toFixed(1)}%)`,
+            position: "insideEndTop",
+            color: "#fff",
+            backgroundColor: bg,
+            padding: [4, 8],
+            borderRadius: 4,
+            fontSize: 11,
+            fontWeight: "bold",
+          },
+        }],
+      };
+    }
+  } catch (e) { /* 成本線載入失敗就當沒有，不影響圖表 */ }
+
   // TWII 疊加：把大盤 normalized 線換成相對於本股第一日的相對價格
   if (state.twiiOn) {
     try {
